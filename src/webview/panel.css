@@ -107,9 +107,11 @@ a:hover, .link:not(:disabled):hover {
   display: flex;
   align-items: center;
 }
-.top-bar { justify-content: space-between; gap: 8px; }
-.header-actions { gap: 12px; }
-.health { gap: 7px; color: var(--tone, var(--muted)); font-weight: 650; }
+.top-bar { justify-content: space-between; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.header-actions { gap: 12px; flex: 0 0 auto; }
+.header-actions > * { white-space: nowrap; }
+.health { gap: 7px; color: var(--tone, var(--muted)); font-weight: 650; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-chain .model { overflow-wrap: anywhere; }
 .health-dot {
   flex: 0 0 8px;
   width: 8px;

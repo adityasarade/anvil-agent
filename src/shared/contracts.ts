@@ -348,6 +348,10 @@ export interface EditorToolHost {
   emit(tfSessionId: string | undefined, e: UiEvent): void;
   /** Current text: open (possibly dirty) buffer first, else disk. null if the file does not exist. */
   readText(relPath: string): Promise<string | null>;
+  /** Workspace-relative POSIX path -> file Uri (keeps src/mcp free of runtime 'vscode' imports). */
+  toUri(relPath: string): vscode.Uri;
+  /** Normalises a model-supplied path to workspace-relative POSIX; throws if it escapes the workspace. */
+  resolvePath(path: string): string;
   /** Diagnostics as text, for one file or the whole workspace. */
   diagnostics(relPath?: string): string;
   /** Environment for run_command (PATH with workspace .venv/bin prepended, etc.). */

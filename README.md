@@ -153,7 +153,7 @@ code ../flask
 | **B. Agent mode** | In the panel, with no files named: *Add a new built-in CLI command flask config that prints the loaded application's configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "\*\*\*". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.* | `pytest tests/test_cli.py -q` passes; `flask --app <any app> config` prints masked JSON; diff touches ≥ 3 files |
 | **C. Resilience** | `npm run setup -- --break-primary` (primary gets an invalid key), then repeat Task A | the editor stays responsive, the panel/notification shows the failure and the automatic switch to the fallback model, and `git status` shows nothing changed. Restore with `npm run setup -- --restore` |
 
-To show an *unreachable endpoint* instead of a bad key, register a `custom` provider whose `base_url` points at a closed local port such as `http://127.0.0.1:9/v1` and put it first in `anvil.models`. Anvil retries with backoff (1s, 2s) and then falls back.
+To show an *unreachable endpoint* instead of a bad key, register a `custom` provider whose `base_url` points at a closed local port such as `http://127.0.0.1:9909/v1` and put it first in `anvil.models`. Anvil retries with backoff (1s, 2s) and then falls back.
 
 ## Models
 

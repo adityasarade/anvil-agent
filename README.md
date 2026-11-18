@@ -159,11 +159,14 @@ To show an *unreachable endpoint* instead of a bad key, register a `custom` prov
 
 Anvil is provider-agnostic: it works with whatever TrueForge is configured with, and the chain is just an ordered list of TrueForge model names. The defaults in `config/models.example.json` are free-tier friendly:
 
-| Role | Model (TrueForge name) | Where it runs | Cost |
-|---|---|---|---|
-| primary | `google-gemini/gemini-flash-latest` | Google AI Studio API | free tier |
-| fallback | `groq/gpt-oss-120b` | Groq API (OpenAI-compatible) | free tier |
-| optional | `cerebras/gpt-oss-120b`, `ollama/*` | Cerebras API / local Ollama | free tier / local |
+| Role | Model (TrueForge name) | Where it runs | Cost | Notes |
+|---|---|---|---|---|
+| primary | `google-gemini/gemini-flash-lite-latest` | Google AI Studio API | free tier | ran all three Round 1 tasks; free tier is ~15 requests/min, so Anvil waits on 429s using the provider's retry hint |
+| fallback | `groq/gpt-oss-120b` | Groq API (OpenAI-compatible) | free tier | very fast; free tier caps it at 8k tokens/min, which is ample for inline edits (Task C) |
+| fallback 2 | `google-gemini/gemini-flash-latest` | Google AI Studio API | free tier | stronger, but often returns 503 "high demand" on the free tier |
+| optional | `cerebras/gpt-oss-120b`, `ollama/*` | Cerebras API / local Ollama | free tier / local | registered by `npm run setup` when their env vars are set |
+
+Total model spend for development, testing and the demo: **$0** (free tiers only).
 
 Switch models with **Anvil: Select Model Chain** (status bar), or edit `anvil.models`.
 

@@ -1,0 +1,159 @@
+{
+  "name": "anvil-agent",
+  "displayName": "Anvil: TrueForge Coding Agent",
+  "description": "An editor-native coding agent whose agent loop runs on TrueForge. Inline edit, agent mode, budgeted context retrieval, per-hunk diff review, streaming, cancellation and automatic model fallback.",
+  "version": "0.1.0",
+  "publisher": "team-anvil",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adityasarade/anvil-agent"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "anvil",
+          "title": "Anvil",
+          "icon": "media/anvil.svg"
+        }
+      ]
+    },
+    "views": {
+      "anvil": [
+        {
+          "type": "webview",
+          "id": "anvil.agentPanel",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "anvil.inlineEdit", "title": "Anvil: Inline Edit", "category": "Anvil" },
+      { "command": "anvil.openPanel", "title": "Anvil: Open Agent Panel", "category": "Anvil" },
+      { "command": "anvil.cancel", "title": "Anvil: Stop Generation", "category": "Anvil", "icon": "$(debug-stop)" },
+      { "command": "anvil.newChat", "title": "Anvil: New Agent Session", "category": "Anvil", "icon": "$(add)" },
+      { "command": "anvil.selectModel", "title": "Anvil: Select Model Chain", "category": "Anvil" },
+      { "command": "anvil.openSession", "title": "Anvil: Open TrueForge Session", "category": "Anvil", "icon": "$(link-external)" },
+      { "command": "anvil.undoLastChange", "title": "Anvil: Undo Last Applied Change", "category": "Anvil" },
+      { "command": "anvil.reconnect", "title": "Anvil: Reconnect to TrueForge", "category": "Anvil" },
+      { "command": "anvil.reindex", "title": "Anvil: Rebuild Context Index", "category": "Anvil" },
+      { "command": "anvil.review.acceptHunk", "title": "Anvil: Accept Hunk", "category": "Anvil" },
+      { "command": "anvil.review.rejectHunk", "title": "Anvil: Reject Hunk", "category": "Anvil" },
+      { "command": "anvil.review.acceptAll", "title": "Anvil: Accept All Hunks", "category": "Anvil", "icon": "$(check-all)" },
+      { "command": "anvil.review.rejectAll", "title": "Anvil: Reject All Hunks", "category": "Anvil", "icon": "$(close-all)" },
+      { "command": "anvil.review.openSideBySide", "title": "Anvil: Open Side-by-Side Diff", "category": "Anvil", "icon": "$(split-horizontal)" }
+    ],
+    "keybindings": [
+      { "command": "anvil.inlineEdit", "key": "ctrl+alt+i", "mac": "cmd+alt+i", "when": "editorTextFocus" },
+      { "command": "anvil.cancel", "key": "escape", "when": "anvil.running" },
+      { "command": "anvil.review.acceptHunk", "key": "ctrl+alt+y", "mac": "cmd+alt+y", "when": "anvil.reviewActive" },
+      { "command": "anvil.review.rejectHunk", "key": "ctrl+alt+n", "mac": "cmd+alt+n", "when": "anvil.reviewActive" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "anvil.review.acceptAll", "when": "resourceScheme == anvil-review", "group": "navigation@1" },
+        { "command": "anvil.review.rejectAll", "when": "resourceScheme == anvil-review", "group": "navigation@2" },
+        { "command": "anvil.review.openSideBySide", "when": "resourceScheme == anvil-review", "group": "navigation@3" }
+      ],
+      "view/title": [
+        { "command": "anvil.newChat", "when": "view == anvil.agentPanel", "group": "navigation@1" },
+        { "command": "anvil.openSession", "when": "view == anvil.agentPanel", "group": "navigation@2" }
+      ],
+      "editor/context": [
+        { "command": "anvil.inlineEdit", "when": "editorHasSelection", "group": "1_modification@1" }
+      ]
+    },
+    "configuration": {
+      "title": "Anvil",
+      "properties": {
+        "anvil.trueforgeUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8790",
+          "description": "Base URL of the local TrueForge server (npx @truefoundry/trueforge)."
+        },
+        "anvil.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Ordered TrueForge model names (provider/model) as configured in TrueForge. The first is primary; the rest are automatic fallbacks. Empty = use every model TrueForge reports, in its order."
+        },
+        "anvil.retry.maxAttempts": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Attempts per model for transient failures (connection refused, 429, 5xx) before falling back to the next model. Backoff doubles from 1s."
+        },
+        "anvil.mcp.port": {
+          "type": "number",
+          "default": 43117,
+          "description": "Local port for Anvil's editor MCP server (bound to 127.0.0.1 only)."
+        },
+        "anvil.context.budgetTokens": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 1000,
+          "maximum": 5500,
+          "description": "Token budget for one retrieve_context call (kept below TrueForge's large-tool-response limit)."
+        },
+        "anvil.context.repoMapTokens": {
+          "type": "number",
+          "default": 1200,
+          "description": "Token budget for the repository map attached to the first agent turn."
+        },
+        "anvil.agents.coder": {
+          "type": "string",
+          "default": "anvil-coder",
+          "description": "TrueForge agent name used by the agent panel."
+        },
+        "anvil.agents.inline": {
+          "type": "string",
+          "default": "anvil-inline",
+          "description": "TrueForge agent name used by inline edit."
+        },
+        "anvil.command.timeoutSeconds": {
+          "type": "number",
+          "default": 180,
+          "description": "Default timeout for run_command."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository -o anvil-agent.vsix",
+    "trueforge": "sh scripts/start-trueforge.sh",
+    "setup": "node scripts/setup-trueforge.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@truefoundry/trueforge-sdk": "0.185.0",
+    "diff": "9.0.0",
+    "marked": "18.2.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "4.1.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

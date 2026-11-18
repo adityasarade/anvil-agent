@@ -1,0 +1,11 @@
+src/**
+test/**
+scripts/**
+docs/**
+node_modules/**
+**/*.map
+tsconfig.json
+esbuild.mjs
+vitest.config.*
+.env*
+config/models.json

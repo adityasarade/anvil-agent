@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+*.vsix
+.env
+.env.*
+!.env.example
+config/models.json
+.DS_Store
+*.log
+.vscode-test/
+coverage/

@@ -173,13 +173,19 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
         query: z.string().min(1).describe('Literal text, or a regex when regex=true.'),
         regex: z.boolean().optional().describe('Treat query as a regular expression.'),
         glob: z.string().optional().describe('Limit to paths matching this glob, e.g. "tests/**/*.py".'),
+        path: z.string().optional().describe('Limit to one file or directory, e.g. "src/flask/" or "src/flask/cli.py".'),
         max_results: z.number().int().positive().optional().describe('Maximum matches (default 40, max 60).'),
       },
       annotations: readOnly,
     },
-    async ({ query, regex, glob, max_results }) =>
+    async ({ query, regex, glob: globArg, path: scopePath, max_results }) =>
       guard(TOOL_NAMES.searchCode, async () => {
         const maxResults = Math.min(max_results ?? 40, SEARCH_MAX);
+        let glob = globArg;
+        if (!glob && scopePath) {
+          const rel = host.resolvePath(scopePath).replace(/\/+$/, '');
+          glob = !rel ? undefined : /\.[A-Za-z0-9]+$/.test(rel) ? rel : `${rel}/**`;
+        }
         if (regex) {
           try {
             new RegExp(query);

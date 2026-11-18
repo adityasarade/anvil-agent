@@ -704,10 +704,16 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
         const cls = classifyError(error);
         log.warn(`turn on ${model} failed (${cls}, attempt ${attempt}/${maxAttempts}): ${shortError(error, 400)}`);
         if (cls === 'other') return finish(run, 'error', res.text, error);
-        if (res.hadSideEffects && res.turnId) {
+        // Any completed tool work (reads, searches, sub-agent findings, edits) is kept: the next
+        // attempt continues from the failed turn instead of re-exploring from scratch, which on
+        // free tiers would burn the same per-minute quota again.
+        if ((res.hadSideEffects || res.progressed) && res.turnId) {
           continuation = {
             turnId: res.turnId,
-            prompt: `The previous attempt stopped because the model call failed (${shortError(error)}). Continue the same task from where it stopped. The edits and commands above already happened - do not repeat them.`,
+            prompt:
+              `The previous attempt stopped because the model call failed (${shortError(error)}). ` +
+              'Continue the same task from where it stopped, using the tool results above. ' +
+              'Edits and commands shown above already happened - do not repeat them.',
           };
         }
         lastError = error;

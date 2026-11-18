@@ -154,6 +154,6 @@ it.each(['approved', 'responded'])('continues from the failed turn after a write
   expect(await handle.done).toMatchObject({ status: 'done', model: 'fake/second' });
   expect(sessions.createTurnStream.mock.calls[1][1]).toMatchObject({
     previousTurnId: 'turn-1',
-    input: [{ type: 'user.message', content: expect.stringContaining('Continue the same task from where it stopped.') }],
+    input: [{ type: 'user.message', content: expect.stringContaining('Continue the same task from where it stopped') }],
   });
 });

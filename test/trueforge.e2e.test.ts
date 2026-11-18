@@ -409,7 +409,7 @@ describe('TrueForge runtime + editor MCP server (live TrueForge)', () => {
     expect(ofType(events, 'model.fallback')).toHaveLength(1);
     expect(host.applied).toHaveLength(1);
     const continuations = fake.requests.slice(requestStart).filter((req) =>
-      JSON.stringify(req.messages).includes('Continue the same task from where it stopped.'));
+      JSON.stringify(req.messages).includes('Continue the same task from where it stopped'));
     expect(continuations.map((req) => req.model)).toEqual(['effect-fail', 'echo']);
     for (const req of continuations) {
       expect(req.messages.find((m) => m.role === 'tool')?.content).toContain('Applied all 2 hunks to app.py');

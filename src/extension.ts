@@ -13,7 +13,7 @@
  *     retrieve_context · search_code · find_symbol · read_file · edit_file · write_file · run_command …
  */
 import * as vscode from 'vscode';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createContextEngine } from './context';
@@ -27,6 +27,7 @@ import { createLogger, setLogSink } from './shared/log';
 import {
   EDIT_TOOLS,
   TOOL_NAMES,
+  unknownToolDenial,
   type AppliedChange,
   type AppliedChangeSummary,
   type ApprovalDecision,
@@ -58,6 +59,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const root = folder.uri.fsPath;
+  const slug = path.basename(root).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20).replace(/^-+|-+$/g, '') || 'workspace';
+  const mcpServerName = `anvil-${slug}-${createHash('sha1').update(root).digest('hex').slice(0, 4)}`;
   const cfg = () => vscode.workspace.getConfiguration('anvil');
 
   /* ── Context engine ─────────────────────────────────────────────── */
@@ -150,7 +153,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   /* ── MCP server + TrueForge runtime ─────────────────────────────── */
   const token = randomBytes(24).toString('hex');
   const gate = createEditGate(host);
-  const mcp = await startEditorMcpServer(host, gate, { port: cfg().get<number>('mcp.port', 43117), token, log: createLogger('mcp') });
+  const mcp = await startEditorMcpServer(host, gate, { port: cfg().get<number>('mcp.port', 43117), token, name: mcpServerName, log: createLogger('mcp') });
   ctx.subscriptions.push({ dispose: () => void mcp.dispose() });
   log.info(`editor MCP server listening on ${mcp.url}`);
 
@@ -164,6 +167,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       inlineAgent: cfg().get<string>('agents.inline', 'anvil-inline'),
     }),
     mcp: () => ({ url: mcp.url, token }),
+    mcpServerName,
+    resolvePath,
     log: createLogger('trueforge'),
   });
 
@@ -228,7 +233,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       panel?.cancelApprovals(handle.runId);
       setRunning();
     };
-    void handle.done.finally(done);
+    if (handle.kind === 'agent') void handle.done.finally(done);
     return { dispose: done };
   };
   const cancelAll = async () => {
@@ -283,6 +288,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   const onApproval = async (call: ToolCallInfo, runId: string): Promise<ApprovalDecision> => {
     try {
+      const denial = unknownToolDenial(call.name);
+      if (denial) return denial;
       if (EDIT_TOOLS.includes(call.name)) {
         const sid = runs.get(runId)?.handle.sessionId ?? sessionId ?? '';
         return await gate.reviewToolCall(call, runId, sid);

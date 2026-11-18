@@ -7,6 +7,7 @@
  * `tool.approval_required` references back to the caller.
  */
 import { isEventDelta, mergeEventDelta } from '@truefoundry/trueforge-sdk';
+import { APPROVAL_TOOLS } from '../shared/contracts';
 import type { ToolCallInfo, UiEvent, UsageInfo } from '../shared/contracts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -47,6 +48,7 @@ export class TurnTranslator {
   outcome?: TurnOutcome;
   /** True once any tool produced a result in this turn (the turn made progress). */
   progressed = false;
+  hadSideEffects = false;
   readonly usage: UsageInfo = {};
 
   private readonly messages = new Map<string, Ev>();
@@ -276,6 +278,7 @@ export class TurnTranslator {
     const callId: string = ev.toolCallId;
     const st = this.calls.get(callId);
     const name = st?.name ?? 'tool';
+    if (APPROVAL_TOOLS.includes(name)) this.hadSideEffects = true;
     const { ok, denied, summary } = summarizeToolContent(ev.content);
     if (ok) this.progressed = true;
     if (st) {

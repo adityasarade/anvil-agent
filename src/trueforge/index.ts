@@ -21,7 +21,7 @@ import type {
   TrueForgeService,
   UiEvent,
 } from '../shared/contracts';
-import { EDIT_TOOLS, MCP_SERVER_NAME, TOOL_NAMES } from '../shared/contracts';
+import { APPROVAL_TOOLS, EDIT_TOOLS, MCP_SERVER_NAME, TOOL_NAMES } from '../shared/contracts';
 import type { Logger } from '../shared/log';
 import { classifyError, errorMessage, isConnectionError, shortError } from './errors';
 import { TrueForgeHttpError, TrueForgeUnreachableError, apiErrorMessage, requestJson } from './http';
@@ -45,6 +45,8 @@ export interface TrueForgeServiceDeps {
   agentsDir: string;
   settings: () => TrueForgeSettings;
   mcp: () => { url: string; token: string };
+  mcpServerName?: string;
+  resolvePath?: (path: string) => string;
   log: Logger;
   /** Test hook: base backoff delay (default 1000 ms, doubling per attempt). */
   backoffBaseMs?: number;
@@ -69,7 +71,7 @@ export const MCP_DESCRIPTION =
   "Anvil editor tools for the user's open VS Code workspace: budgeted context retrieval, repository map, code search, " +
   'symbol lookup, line-ranged file reads, diagnostics, reviewed file edits and shell commands.';
 
-type TurnResult = TurnOutcome & { turnId?: string; fatal?: boolean; progressed?: boolean };
+type TurnResult = TurnOutcome & { turnId?: string; fatal?: boolean; progressed?: boolean; hadSideEffects?: boolean };
 
 interface RunState {
   readonly runId: string;
@@ -98,6 +100,7 @@ interface RunState {
 
 export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeService {
   const { log } = deps;
+  const mcpServerName = deps.mcpServerName ?? MCP_SERVER_NAME;
   const runsBySession = new Map<string, RunState>();
   const lastGoodTurn = new Map<string, string>();
   const sessionModel = new Map<string, string>();
@@ -191,14 +194,14 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
       body: {
         manifest: {
           type: 'remote',
-          name: MCP_SERVER_NAME,
+          name: mcpServerName,
           url: mcp.url,
           description: MCP_DESCRIPTION,
           auth: { type: 'header', headers: { [MCP_TOKEN_HEADER]: mcp.token } },
         },
       },
     });
-    log.info(`registered MCP server ${MCP_SERVER_NAME} -> ${mcp.url}`);
+    log.info(`registered MCP server ${mcpServerName} -> ${mcp.url}`);
 
     const chain = await modelChain();
     if (!chain.length) {
@@ -210,7 +213,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     const primary = chain[0];
     const existing = await listAgents();
     for (const def of await loadAgentFiles()) {
-      const manifest = substituteModel(def.manifest, primary);
+      const manifest = specFor(substituteModel(def.manifest, primary), primary);
       const found = existing.find((a) => a.name === def.name);
       if (found) {
         await requestJson(url, 'PUT', `/api/v1/agents/${encodeURIComponent(found.id)}`, { body: { description: def.description, manifest } });
@@ -240,7 +243,21 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
   }
 
   function specFor(base: Record<string, any>, model: string): Record<string, any> {
-    return { ...base, model: { ...(base.model ?? {}), name: model } };
+    const spec: Record<string, any> = { ...base, model: { ...(base.model ?? {}), name: model } };
+    const editorNames = new Set([MCP_SERVER_NAME]);
+    if (Array.isArray(base.mcp_servers)) {
+      spec.mcp_servers = base.mcp_servers.map((server: { name: string }) => {
+        // Another workspace may have updated the shared named agent since setup.
+        if (server.name !== MCP_SERVER_NAME && !/^anvil-[a-z0-9-]{1,20}-[a-f0-9]{4}$/.test(server.name)) return server;
+        editorNames.add(server.name);
+        return { ...server, name: mcpServerName };
+      });
+    }
+    if (typeof base.instructions === 'string') {
+      const names = [...editorNames].sort((a, b) => b.length - a.length).join('|');
+      spec.instructions = base.instructions.replace(new RegExp(names, 'g'), mcpServerName);
+    }
+    return spec;
   }
 
   async function createSession(run: RunState, agent: WireAgent, model: string): Promise<string> {
@@ -419,13 +436,15 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     return undefined;
   }
 
-  async function handleApproval(run: RunState, sid: string, turnId: string, tr: TurnTranslator, ref: ApprovalRef): Promise<void> {
+  async function handleApproval(run: RunState, sid: string, turnId: string, tr: TurnTranslator, ref: ApprovalRef, editedPaths: Set<string>): Promise<void> {
     if (run.cancelled || run.finished) return;
     const info = tr.resolveCall(ref) ?? (await lookupCall(sid, turnId, ref));
     let decision: ApprovalDecision;
     if (!info) {
       decision = { status: 'deny', reason: 'Anvil could not find this tool call to show it for review. Try the call again.' };
       log.warn(`approval for unknown call ${ref.callId}; denying`);
+    } else if (deferUntilToolResults(info, editedPaths)) {
+      decision = { status: 'deny', reason: 'Issue this call again after the previous tool results arrive.' };
     } else {
       tr.setCallStatus(ref.callId, 'awaiting-approval', info);
       emit(run, { type: 'approval.requested', runId: run.runId, call: info, kind: approvalKind(info.name) });
@@ -441,7 +460,8 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
       if (!run.pendingApprovals.delete(ref.callId)) return; // already resolved by cancel()
       if (!decision || (decision.status !== 'allow' && decision.status !== 'deny')) decision = { status: 'deny', reason: 'Invalid approval decision.' };
     }
-    if (run.cancelled) return;
+    if (run.cancelled || run.finished || tr.outcome) return;
+    if (decision.status === 'allow' && info && APPROVAL_TOOLS.includes(info.name)) tr.hadSideEffects = true;
     try {
       await sdk().sessions.createTurnEvents(
         sid,
@@ -468,7 +488,22 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
       decision: decision.status,
       reason: decision.status === 'deny' ? decision.reason : undefined,
     });
-    if (info) tr.setCallStatus(ref.callId, decision.status === 'allow' ? 'running' : 'denied');
+    if (info) tr.setCallStatus(ref.callId, decision.status === 'allow' ? 'running' : 'denied', info);
+  }
+
+  function deferUntilToolResults(call: ToolCallInfo, editedPaths: Set<string>): boolean {
+    if (call.name === TOOL_NAMES.runCommand) return editedPaths.size > 0;
+    if (!EDIT_TOOLS.includes(call.name)) return false;
+    const raw = String(call.args.path ?? '');
+    let relPath = raw;
+    try {
+      relPath = deps.resolvePath?.(raw) ?? path.normalize(raw.trim().replace(/^["']|["']$/g, ''));
+    } catch {
+      // Leave invalid paths to the regular approval handler.
+    }
+    if (editedPaths.has(relPath)) return true;
+    editedPaths.add(relPath);
+    return false;
   }
 
   function enqueueApprovals(run: RunState, sid: string, tr: TurnTranslator, refs: ApprovalRef[]): void {
@@ -479,9 +514,10 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     }
     run.approvalChain = run.approvalChain
       .then(async () => {
+        const editedPaths = new Set<string>();
         for (const ref of refs) {
-          if (run.cancelled || run.finished) return;
-          await handleApproval(run, sid, turnId, tr, ref);
+          if (run.cancelled || run.finished || tr.outcome) return;
+          await handleApproval(run, sid, turnId, tr, ref, editedPaths);
         }
       })
       .catch((err) => log.error(`approval handling failed: ${errorMessage(err)}`));
@@ -503,7 +539,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     return count;
   }
 
-  async function runTurn(run: RunState, sid: string, previousTurnId: string): Promise<TurnResult> {
+  async function runTurn(run: RunState, sid: string, previousTurnId: string, prompt: string): Promise<TurnResult> {
     const tr = new TurnTranslator(run.runId, (e) => emit(run, e));
     run.current = tr;
     const reqOpts = { abortSignal: run.abort.signal, maxRetries: 0, timeoutInSeconds: 3600 };
@@ -512,7 +548,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     try {
       stream = await sdk().sessions.createTurnStream(
         sid,
-        { input: [{ type: 'user.message', content: run.opts.prompt } as any], previousTurnId },
+        { input: [{ type: 'user.message', content: prompt } as any], previousTurnId },
         reqOpts,
       );
     } catch (err) {
@@ -530,42 +566,44 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
     }
 
     await consume(run, sid, tr, stream);
-    let idleLoops = 0;
+    let recoveryFailures = 0;
     while (!tr.outcome && !run.cancelled) {
       if (!tr.turnId) return { status: 'error', text: '', fatal: true, error: 'The TrueForge stream ended before the turn was created.' };
-      let state: any;
+      let recoveryError: string | undefined;
       try {
-        const res = await sdk().sessions.getTurn(sid, tr.turnId, { abortSignal: run.abort.signal, maxRetries: 2, timeoutInSeconds: 30 });
-        state = res.data.state;
+        const res = await sdk().sessions.getTurn(sid, tr.turnId, { abortSignal: run.abort.signal, maxRetries: 0, timeoutInSeconds: 30 });
+        const state = res.data.state;
+        if (state?.status !== 'running' && state?.status !== 'paused') {
+          tr.outcome = tr.outcomeFromState(state);
+          break;
+        }
+        log.info(`turn ${tr.turnId} still ${state.status}; re-subscribing after ${tr.lastEventId ?? 'start'}`);
+        const sub = await sdk().sessions.subscribeToTurn(sid, tr.turnId, tr.lastEventId ? { afterEventId: tr.lastEventId } : {}, reqOpts);
+        const n = await consume(run, sid, tr, sub);
+        if (n > 0) {
+          recoveryFailures = 0;
+          continue;
+        }
       } catch (err) {
         if (run.cancelled) break;
-        log.warn(`could not read turn ${tr.turnId}: ${errorMessage(err)}`);
-        if (isConnectionError(err) && idleLoops++ > 5) {
-          return { status: 'error', text: '', fatal: true, error: new TrueForgeUnreachableError(baseUrl(), err).message };
+        if ((err as { statusCode?: number }).statusCode === 404) {
+          return { status: 'error', text: tr.partialText, fatal: true, error: 'TrueForge session no longer exists' };
         }
-        await sleep(run, 1000);
-        continue;
+        recoveryError = errorMessage(err);
+        log.warn(`could not recover turn ${tr.turnId}: ${recoveryError}`);
       }
-      if (state?.status === 'running' || state?.status === 'paused') {
-        log.info(`turn ${tr.turnId} still ${state.status}; re-subscribing after ${tr.lastEventId ?? 'start'}`);
-        try {
-          const sub = await sdk().sessions.subscribeToTurn(sid, tr.turnId, tr.lastEventId ? { afterEventId: tr.lastEventId } : {}, reqOpts);
-          const n = await consume(run, sid, tr, sub);
-          if (n === 0) await sleep(run, Math.min(5000, 250 * 2 ** Math.min(idleLoops++, 4)));
-          else idleLoops = 0;
-        } catch (err) {
-          if (run.cancelled) break;
-          log.warn(`re-subscribe failed: ${errorMessage(err)}`);
-          await sleep(run, 1000);
-        }
-      } else {
-        tr.outcome = tr.outcomeFromState(state);
+      if (++recoveryFailures >= 10) {
+        return {
+          status: 'error', text: tr.partialText, fatal: true,
+          error: `Could not recover the TrueForge stream after 10 attempts${recoveryError ? `: ${recoveryError}` : '.'}`,
+        };
       }
+      await sleep(run, recoveryError ? 1000 : Math.min(5000, 250 * 2 ** Math.min(recoveryFailures - 1, 4)));
     }
     addUsage(run, tr);
     if (run.cancelled) return { status: 'cancelled', text: tr.outcome?.text ?? '', turnId: tr.turnId };
     const out = tr.outcome!;
-    return { ...out, turnId: tr.turnId, progressed: tr.progressed };
+    return { ...out, turnId: tr.turnId, progressed: tr.progressed, hadSideEffects: tr.hadSideEffects };
   }
 
   async function execute(run: RunState): Promise<void> {
@@ -613,6 +651,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
 
     const failures: Array<{ model: string; error: string }> = [];
     let toolsRanBeforeFailure = false;
+    let continuation: { turnId: string; prompt: string } | undefined;
     for (let mi = 0; mi < order.length; mi++) {
       if (run.cancelled) return;
       const model = order[mi];
@@ -648,8 +687,8 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
       let lastError = '';
       for (let attempt = 1; ; attempt++) {
         if (run.cancelled) return;
-        const prev = await previousTurnFor(sid, !reused && !lastGoodTurn.has(sid));
-        const res = await runTurn(run, sid, prev);
+        const prev = continuation?.turnId ?? await previousTurnFor(sid, !reused && !lastGoodTurn.has(sid));
+        const res = await runTurn(run, sid, prev, continuation?.prompt ?? run.opts.prompt);
         if (run.cancelled) return;
         if (res.status === 'done') {
           if (res.turnId) lastGoodTurn.set(sid, res.turnId);
@@ -660,11 +699,17 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
           return finish(run, 'cancelled', res.text, res.reason ? `Turn cancelled (${res.reason}).` : undefined);
         }
         const error = res.error ?? 'unknown error';
-        if (res.progressed) toolsRanBeforeFailure = true;
+        if (res.progressed || res.hadSideEffects) toolsRanBeforeFailure = true;
         if (res.fatal) return finish(run, 'error', res.text, error);
         const cls = classifyError(error);
         log.warn(`turn on ${model} failed (${cls}, attempt ${attempt}/${maxAttempts}): ${shortError(error, 400)}`);
         if (cls === 'other') return finish(run, 'error', res.text, error);
+        if (res.hadSideEffects && res.turnId) {
+          continuation = {
+            turnId: res.turnId,
+            prompt: `The previous attempt stopped because the model call failed (${shortError(error)}). Continue the same task from where it stopped. The edits and commands above already happened - do not repeat them.`,
+          };
+        }
         lastError = error;
         if (cls === 'transient' && attempt < maxAttempts) {
           const delayMs = backoffBase * 2 ** (attempt - 1);

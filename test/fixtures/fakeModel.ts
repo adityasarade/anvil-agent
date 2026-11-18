@@ -85,6 +85,11 @@ export async function startFakeModel(opts: FakeModelOptions = {}, port = 0): Pro
     }
 
     const plan = decide(entry, editPath, edits);
+    if (entry.model === 'effect-fail' && entry.messages.some((m) => m.role === 'tool' && String(m.content).includes('Applied'))) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Model failed after the edit.' } }));
+      return;
+    }
     if (!entry.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(completion(entry.model, plan.text ?? 'ok')));
@@ -183,6 +188,7 @@ function toolCall(req: FakeModelRequest, name: string, args: Record<string, unkn
 
 function decide(req: FakeModelRequest, editPath: string, edits: Array<{ old_text: string; new_text: string }>): Plan {
   if (req.model === 'echo') return { text: `echo: ${lastUserText(req).slice(0, 200)}` };
+  if (req.model === 'effect-fail') return { toolCall: toolCall(req, 'edit_file', { path: editPath, edits }) };
   if (req.model === 'cmd') {
     // Runs a long command (for cancellation tests); the pid lands in child.pid in the workspace.
     const ran = req.messages.some((m) => (m.tool_calls ?? []).some((tc) => tc.function.name.endsWith('run_command') || tc.function.arguments.includes('run_command')));

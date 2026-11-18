@@ -408,6 +408,7 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
       refresh(s, true);
     };
     return {
+      done: s.promise,
       update(text) {
         if (s.resolved || !s.streaming) return;
         s.proposed = text;
@@ -444,8 +445,8 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
     }
   }
 
-  async function apply(change: ProposedChange, outcome: ReviewOutcome): Promise<AppliedChange | null> {
-    if (outcome.status !== 'decided' || outcome.accepted.length === 0) return null;
+  async function apply(change: ProposedChange, outcome: ReviewOutcome, signal?: AbortSignal): Promise<AppliedChange | null> {
+    if (signal?.aborted || outcome.status !== 'decided' || outcome.accepted.length === 0) return null;
     const hunks = computeHunks(change.originalText, change.proposedText);
     const accepted = outcome.accepted.filter((i) => i >= 0 && i < hunks.length);
     if (!accepted.length) return null;
@@ -461,10 +462,11 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
       edit.createFile(uri, { overwrite: true, contents: Buffer.from(content, 'utf8') });
       if (!(await vscode.workspace.applyEdit(edit))) throw new Error(`VS Code rejected creating ${change.relPath}.`);
       const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.isDirty) await doc.save();
+      if (doc.isDirty && !(await doc.save())) throw new Error(`Could not save ${change.relPath}`);
       after = doc.getText();
     } else {
       const doc = await vscode.workspace.openTextDocument(uri); // open buffer if loaded, else disk
+      if (signal?.aborted) return null;
       const current = doc.getText();
       if (current !== change.originalText) {
         throw new Error(`${change.relPath} changed since the proposal was made; nothing was applied.`);
@@ -474,7 +476,7 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
         edit.replace(uri, new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end)), e.text);
       }
       if (!(await vscode.workspace.applyEdit(edit))) throw new Error(`VS Code rejected the edit to ${change.relPath}.`);
-      if (!(await doc.save())) log.warn(`save of ${change.relPath} returned false`);
+      if (!(await doc.save())) throw new Error(`Could not save ${change.relPath}`);
       after = doc.getText(); // may differ from the plain result if format-on-save ran
     }
 

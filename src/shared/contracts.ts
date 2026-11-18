@@ -178,6 +178,8 @@ export interface AppliedChange {
 }
 
 export interface StreamingReview {
+  /** Settles when the reviewer decides or dismisses the preview, even during streaming. */
+  readonly done: Promise<ReviewOutcome>;
   /** Replace the live preview with the latest full proposed text (throttled internally). */
   update(proposedText: string): void;
   /** Stream finished: compute hunks, show per-hunk controls, resolve when the user has decided. */
@@ -205,7 +207,7 @@ export interface ReviewService {
    * Refuses (throws) if the file's current text no longer equals change.originalText.
    * Returns null when no hunk was accepted.
    */
-  apply(change: ProposedChange, outcome: ReviewOutcome): Promise<AppliedChange | null>;
+  apply(change: ProposedChange, outcome: ReviewOutcome, signal?: AbortSignal): Promise<AppliedChange | null>;
   /** Cancels every pending review belonging to a run (closes the review editors, resolves them as 'cancelled'). */
   cancelRun(runId: string): void;
   readonly journal: ChangeJournal;
@@ -337,6 +339,12 @@ export const TOOL_NAMES = {
 
 export const EDIT_TOOLS: readonly string[] = [TOOL_NAMES.editFile, TOOL_NAMES.writeFile];
 export const APPROVAL_TOOLS: readonly string[] = [TOOL_NAMES.editFile, TOOL_NAMES.writeFile, TOOL_NAMES.runCommand];
+
+export function unknownToolDenial(name: string): ApprovalDecision | undefined {
+  if (name === 'call_tool') return { status: 'deny', reason: 'Anvil could not resolve this tool call; please issue it again.' };
+  if (!Object.values<string>(TOOL_NAMES).includes(name)) return { status: 'deny', reason: `Anvil does not recognize tool "${name}".` };
+  return undefined;
+}
 
 /** What the MCP tool handlers need from the editor. Implemented in src/extension.ts. */
 export interface EditorToolHost {

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import type { ContextEngine, RunHandle, ReviewService, TrueForgeService, UiEvent, ToolCallInfo, ApprovalDecision, SymbolDef } from '../shared/contracts';
-import { APPROVAL_TOOLS } from '../shared/contracts';
+import type { ContextEngine, RunHandle, ReviewService, StreamingReview, TrueForgeService, UiEvent, ToolCallInfo, ApprovalDecision, SymbolDef } from '../shared/contracts';
+import { APPROVAL_TOOLS, unknownToolDenial } from '../shared/contracts';
 import type { Logger } from '../shared/log';
 import { extractCode, identifiers, reindent } from './extract';
 
@@ -127,12 +127,6 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
   ].join('\n');
 
   const changeId = `inline-${Date.now().toString(36)}-${++counter}`;
-  const base = {
-    id: changeId, runId: `inline-run-${changeId}`, source: 'inline' as const, relPath, uri: doc.uri,
-    originalText: original, isNewFile: false, title: instruction,
-  };
-  const stream = review.beginStreaming(base);
-
   const build = (code: string): string => {
     let c = code.replace(/\r\n/g, '\n');
     c = reindent(c, firstLine);
@@ -161,12 +155,20 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
 
   const byThread = new Map<string, string>();
   const lastMsg = new Map<string, string>();
+  let stream: StreamingReview | undefined;
+  const cancelSignal = new AbortController();
+  const showCancelled = () => void vscode.window.showInformationMessage('Anvil: cancelled — no changes were made.');
   const currentText = (): string => {
     if (byThread.has('main')) return byThread.get('main')!;
     return byThread.values().next().value ?? '';
   };
 
   const onEvent = (e: UiEvent): void => {
+    if (e.type === 'model.retry' || e.type === 'model.fallback') {
+      byThread.clear();
+      lastMsg.clear();
+      stream?.update(original);
+    }
     if (e.type === 'text.delta') {
       const key = e.threadId === null || e.threadId === 'main' ? 'main' : e.threadId;
       let t = byThread.get(key) ?? '';
@@ -174,7 +176,7 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
       lastMsg.set(key, e.messageId);
       byThread.set(key, t + e.text);
       const { code } = extractCode(currentText());
-      stream.update(code.trim() === '' ? original : buildStreaming(code));
+      stream?.update(code.trim() === '' ? original : buildStreaming(code));
     } else if (e.type === 'model.retry') {
       vscode.window.setStatusBarMessage(
         `Anvil: ${e.model} failed (${short(e.error, 60)}) — retry ${e.attempt}/${e.maxAttempts} in ${Math.round(e.delayMs / 100) / 10}s`, 8000);
@@ -186,13 +188,31 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
   };
 
   const onApproval = async (call: ToolCallInfo): Promise<ApprovalDecision> =>
-    APPROVAL_TOOLS.includes(call.name) ? { status: 'deny', reason: 'inline edit is read-only' } : { status: 'allow' };
+    unknownToolDenial(call.name) ?? (APPROVAL_TOOLS.includes(call.name) ? { status: 'deny', reason: 'inline edit is read-only' } : { status: 'allow' });
 
-  let handle: RunHandle | undefined;
   let tracker: vscode.Disposable | undefined;
   try {
-    handle = trueforge.startRun({ kind: 'inline', prompt, onEvent, onApproval });
-    tracker = deps.trackRun(handle);
+    const handle = trueforge.startRun({ kind: 'inline', prompt, onEvent, onApproval });
+    const base = {
+      id: changeId, runId: handle.runId, source: 'inline' as const, relPath, uri: doc.uri,
+      originalText: original, isNewFile: false, title: instruction,
+    };
+    stream = review.beginStreaming(base);
+    const cancel = () => {
+      cancelSignal.abort();
+      stream?.cancel();
+      return handle.cancel();
+    };
+    tracker = deps.trackRun({
+      runId: handle.runId,
+      kind: handle.kind,
+      get sessionId() { return handle.sessionId; },
+      done: handle.done,
+      cancel,
+    });
+    void stream.done.then((outcome) => {
+      if (outcome.status === 'cancelled' && !cancelSignal.signal.aborted) return cancel();
+    });
     let result;
     try {
       result = await handle.done;
@@ -201,9 +221,9 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
     }
     status.hide();
 
-    if (result.status === 'cancelled') {
+    if (result.status === 'cancelled' || cancelSignal.signal.aborted) {
       stream.cancel();
-      void vscode.window.showInformationMessage('Anvil: cancelled — no changes were made.');
+      showCancelled();
       return;
     }
     if (result.status === 'error') {
@@ -211,7 +231,7 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
       void vscode.window.showErrorMessage(`Anvil inline edit failed: ${result.error ?? 'unknown error'}. No files were changed.`);
       return;
     }
-    const text = currentText() || result.text || '';
+    const text = result.text || currentText();
     const { code } = extractCode(text);
     if (!code.trim()) {
       stream.cancel();
@@ -220,12 +240,18 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
     }
     const finalProposed = build(code);
     const outcome = await stream.complete(finalProposed);
-    if (outcome.status === 'cancelled' || outcome.accepted.length === 0) return;
+    if (outcome.status === 'cancelled' || cancelSignal.signal.aborted) {
+      showCancelled();
+      return;
+    }
+    if (outcome.accepted.length === 0) return;
     try {
-      await review.apply(
-        { ...base, runId: handle.runId, proposedText: finalProposed },
+      const applied = await review.apply(
+        { ...base, proposedText: finalProposed },
         outcome,
+        cancelSignal.signal,
       );
+      if (!applied && cancelSignal.signal.aborted) showCancelled();
     } catch (e) {
       log.error('inline apply failed', e);
       void vscode.window.showErrorMessage(`Anvil: could not apply the edit: ${e instanceof Error ? e.message : String(e)}`);

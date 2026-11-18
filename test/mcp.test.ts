@@ -136,13 +136,18 @@ describe('EditGate', () => {
     expect(await host.read('new.py')).toBeNull();
   });
 
-  it('falls back to the newest reviewed entry for the same session, tool and path', async () => {
+  it('falls back only when one reviewed entry remains for the same session, tool and path', async () => {
     const args = { path: 'app.py', edits: EDITS };
+    const other = { path: 'app.py', edits: [{ old_text: 'return a + b', new_text: 'return b + a' }] };
     expect((await gate.reviewToolCall(call('edit_file', args), 'run-1', 'sess-1')).status).toBe('allow');
-    // MCP-side args differ slightly (e.g. a field the schema stripped), path is the same.
+    expect((await gate.reviewToolCall(call('edit_file', other), 'run-2', 'sess-1')).status).toBe('allow');
+    expect(await gate.applyReviewed('edit_file', { ...args, path: './app.py' }, 'sess-1')).toMatch(/^Not applied/);
+    expect(await gate.applyReviewed('edit_file', args, undefined)).toMatch(/^Not applied/);
+    expect(await host.read('app.py')).toBe(APP_PY);
+    gate.forgetRun('run-2');
+    expect(await gate.applyReviewed('edit_file', args, 'other-session')).toMatch(/^Not applied/);
     const msg = await gate.applyReviewed('edit_file', { path: './app.py', edits: EDITS, extra: true }, 'sess-1');
     expect(msg).toBe('Applied all 2 hunks to app.py. File now has 21 lines.');
-    expect(await gate.applyReviewed('edit_file', args, 'other-session')).toMatch(/^Not applied/);
   });
 
   it('rejecting all hunks, cancelling the review, or forgetting the run never writes', async () => {
@@ -266,6 +271,19 @@ describe('editor MCP server', () => {
     expect(res.isError).toBeFalsy();
     expect(textOf(res)).toMatch(/^Applied hunk 2 of 2 to app\.py\. The user rejected hunk 1 \(line 1: 'GREETING = "hello"'\)/);
     expect(await host.read('app.py')).toContain('return int(a) + int(b)');
+    await seed(host, { 'app.py': APP_PY });
+  });
+
+  it('matches canonical array and JSON-string edits even with a second approval for the same file', async () => {
+    const args = { path: 'app.py', edits: EDITS, description: '17' };
+    host.setPolicy(acceptAll);
+    const extra = EDITS.map((e) => ({ ...e, line: 1 }));
+    expect((await gate.reviewToolCall(call('edit_file', { ...args, edits: extra, description: 17 }), 'run-1', 'sess-1')).status).toBe('allow');
+    expect((await gate.reviewToolCall(call('edit_file', { path: 'app.py', edits: EDITS.slice(0, 1) }), 'run-2', 'sess-1')).status).toBe('allow');
+    const result = await client.callTool({ name: 'edit_file', arguments: { ...args, edits: JSON.stringify(EDITS) } });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toMatch(/^Applied all 2 hunks/);
+    gate.forgetRun('run-2');
     await seed(host, { 'app.py': APP_PY });
   });
 

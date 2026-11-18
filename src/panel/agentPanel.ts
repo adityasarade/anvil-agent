@@ -43,6 +43,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       if (this.view === view) {
         this.view = undefined;
         this.ready = false;
+        for (const callId of this.approvals.keys()) {
+          this.resolveApproval(callId, { decision: 'deny', reason: 'panel closed' });
+        }
       }
     });
 

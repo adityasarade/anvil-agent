@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { UiEvent } from '../src/shared/contracts';
+import { unknownToolDenial } from '../src/shared/contracts';
 import { classifyError, isModelError } from '../src/trueforge/errors';
 import { substituteModel } from '../src/trueforge';
 import { TurnTranslator, summarizeToolContent, toToolCallInfo } from '../src/trueforge/translate';
@@ -54,14 +55,23 @@ describe('toToolCallInfo', () => {
     const info = toToolCallInfo(
       {
         id: 'c1',
-        function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'anvil-editor', tool_name: 'edit_file', input: { path: 'a.py', edits: [] } }) },
+        function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'anvil-workspace-1234', tool_name: 'edit_file', input: { path: 'a.py', edits: [] } }) },
         toolInfo: { type: 'truefoundry-system', name: 'call_tool' },
       },
       'main',
     );
-    expect(info).toEqual({ callId: 'c1', threadId: 'main', name: 'edit_file', server: 'anvil-editor', args: { path: 'a.py', edits: [] } });
+    expect(info).toEqual({ callId: 'c1', threadId: 'main', name: 'edit_file', server: 'anvil-workspace-1234', args: { path: 'a.py', edits: [] } });
     const direct = toToolCallInfo({ id: 'c2', function: { name: 'read_file', arguments: '{"path":"a.py"}' }, toolInfo: { type: 'mcp', name: 'read_file', serverName: 'anvil-editor' } }, 'sub-1');
     expect(direct).toMatchObject({ name: 'read_file', server: 'anvil-editor', threadId: 'sub-1', args: { path: 'a.py' } });
+  });
+
+  it('denies unresolved wrappers and unknown approval names', () => {
+    const unresolved = toToolCallInfo({ id: 'c1', function: { name: 'call_tool', arguments: '{"tool_' } }, 'main');
+    expect(unknownToolDenial(unresolved.name)).toEqual({
+      status: 'deny', reason: 'Anvil could not resolve this tool call; please issue it again.',
+    });
+    expect(unknownToolDenial('unrecognized')).toMatchObject({ status: 'deny' });
+    expect(unknownToolDenial('read_file')).toBeUndefined();
   });
 });
 

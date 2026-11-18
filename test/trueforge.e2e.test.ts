@@ -30,6 +30,7 @@ const log: Logger = {
 };
 
 const TOKEN = `tok-${Math.random().toString(36).slice(2)}`;
+const MCP_NAME = 'anvil-editor-9876';
 let tf: TrueForgeProcess | undefined;
 let fake: FakeModelServer;
 let host: TestHost;
@@ -69,23 +70,24 @@ function models(...names: string[]) {
 
 beforeAll(async () => {
   // Short paused-turn keepalive so the offload/re-subscribe path is exercised (the launcher script uses 3600).
-  tf = await startTrueForge(8791, { TURN_PAUSED_KEEPALIVE_SECONDS: '2' });
+  tf = await startTrueForge(await closedPort(), { TURN_PAUSED_KEEPALIVE_SECONDS: '2' });
   if (!tf) return;
   settings.trueforgeUrl = tf.url;
   fake = await startFakeModel({ editPath: 'app.py', slowChunkMs: 100 });
   await api('PUT', '/api/v1/settings/model-providers', {
-    manifest: { type: 'custom', name: 'fake', base_url: fake.url, models: models('script', 'scout', 'cmd', 'echo', 'unauthorized', 'slow') },
+    manifest: { type: 'custom', name: 'fake', base_url: fake.url, models: models('script', 'scout', 'cmd', 'echo', 'unauthorized', 'slow', 'effect-fail') },
   });
   await api('PUT', '/api/v1/settings/model-providers', {
     manifest: { type: 'custom', name: 'down', base_url: `http://127.0.0.1:${await closedPort()}/v1`, models: models('down') },
   });
   host = createTestHost();
   gate = createEditGate(host);
-  mcp = await startEditorMcpServer(host, gate, { port: 0, token: TOKEN, log });
+  mcp = await startEditorMcpServer(host, gate, { port: 0, token: TOKEN, name: MCP_NAME, log });
   service = createTrueForgeService({
     agentsDir: fileURLToPath(new URL('../agents', import.meta.url)),
     settings: () => settings,
     mcp: () => ({ url: mcp.url, token: TOKEN }),
+    mcpServerName: MCP_NAME,
     log,
   });
   host.setTrueForge(service);
@@ -149,8 +151,8 @@ async function waitFor(cond: () => boolean, ms = 15_000): Promise<void> {
   }
 }
 
-async function turnsOf(sid: string): Promise<Array<{ id: string; state: { status: string; message?: string } }>> {
-  const r = await api<{ data: Array<{ id: string; created_at: string; state: { status: string; message?: string } }> }>('GET', `/api/v1/sessions/${sid}/turns`);
+async function turnsOf(sid: string) {
+  const r = await api<{ data: Array<{ id: string; previous_turn_id: string | null; created_at: string; state: { status: string; message?: string } }> }>('GET', `/api/v1/sessions/${sid}/turns`);
   return [...r.data].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
@@ -165,7 +167,7 @@ describe('TrueForge runtime + editor MCP server (live TrueForge)', () => {
     const all = await service.modelChain();
     expect(all).toEqual(expect.arrayContaining(['fake/script', 'down/down']));
     // TrueForge connects to our MCP server (token header) and lists the tools with annotations.
-    const tools = JSON.stringify(await api('GET', '/api/v1/mcp-servers/anvil-editor/tools'));
+    const tools = JSON.stringify(await api('GET', `/api/v1/mcp-servers/${MCP_NAME}/tools`));
     for (const name of ['retrieve_context', 'repo_map', 'search_code', 'find_symbol', 'read_file', 'list_files', 'edit_file', 'write_file', 'run_command', 'get_diagnostics']) {
       expect(tools).toContain(name);
     }
@@ -396,6 +398,27 @@ describe('TrueForge runtime + editor MCP server (live TrueForge)', () => {
     expect(events.findIndex((e) => e.type === 'model.fallback')).toBeGreaterThan(events.findIndex((e) => e.type === 'model.retry'));
   }, 60_000);
 
+  it('retries and falls back with the failed turn’s completed edit in history', async () => {
+    settings.models = ['fake/effect-fail', 'fake/echo'];
+    settings.retryMaxAttempts = 2;
+    const requestStart = fake.requests.length;
+    const { handle, events } = start('Make the greeting say hello world');
+    const result = await handle.done;
+    expect(result).toMatchObject({ status: 'done', model: 'fake/echo' });
+    expect(ofType(events, 'model.retry')).toHaveLength(1);
+    expect(ofType(events, 'model.fallback')).toHaveLength(1);
+    expect(host.applied).toHaveLength(1);
+    const continuations = fake.requests.slice(requestStart).filter((req) =>
+      JSON.stringify(req.messages).includes('Continue the same task from where it stopped.'));
+    expect(continuations.map((req) => req.model)).toEqual(['effect-fail', 'echo']);
+    for (const req of continuations) {
+      expect(req.messages.find((m) => m.role === 'tool')?.content).toContain('Applied all 2 hunks to app.py');
+    }
+    const turns = await turnsOf(handle.sessionId!);
+    expect(turns.map((t) => t.state.status)).toEqual(['error', 'error', 'done']);
+    expect(turns.slice(1).map((t) => t.previous_turn_id)).toEqual([turns[0].id, turns[0].id]);
+  }, 60_000);
+
   it('every model failing ends with a clear error naming each model', async () => {
     settings.models = ['fake/unauthorized'];
     const { handle, events } = start('hello');
@@ -428,7 +451,9 @@ describe('TrueForge runtime + editor MCP server (live TrueForge)', () => {
     const ra = await a.handle.done;
     expect(ra.status).toBe('done');
     expect(ra.text).toBe('echo: rewrite this');
-    const sess = await api<{ data: { metadata?: Record<string, string> } }>('GET', `/api/v1/sessions/${a.handle.sessionId}`);
+    const sess = await api<{ data: { metadata?: Record<string, string>; agent: { spec: { instructions: string; mcp_servers: Array<{ name: string }> } } } }>('GET', `/api/v1/sessions/${a.handle.sessionId}`);
     expect(sess.data.metadata?.anvil_agent).toBe('anvil-inline');
+    expect(sess.data.agent.spec.mcp_servers.map((s) => s.name)).toEqual([MCP_NAME]);
+    expect(sess.data.agent.spec.instructions).toContain(`read-only ${MCP_NAME} tools`);
   }, 30_000);
 });

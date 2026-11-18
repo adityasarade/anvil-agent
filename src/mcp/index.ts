@@ -17,6 +17,7 @@ import type { EditGate, EditorToolHost } from '../shared/contracts';
 import { MCP_SERVER_NAME, TOOL_NAMES } from '../shared/contracts';
 import type { Logger } from '../shared/log';
 import { formatRetrieval } from '../context';
+import { canonicalEditArgs } from './editGate';
 import { formatCommandResult, runShellCommand } from './runCommand';
 
 export { createEditGate, applyTextEdits, stableStringify } from './editGate';
@@ -274,11 +275,14 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
   );
 
   const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+  const editString = z.union([z.string(), z.number(), z.boolean()]);
 
   const applyEdit = (name: string) => async (args: Record<string, unknown>, extra: { signal: AbortSignal; requestInfo?: { headers?: Record<string, string | string[] | undefined> } }) =>
     guard(name, async () => {
       if (extra.signal.aborted) return fail('Not applied: the request was cancelled.');
-      const text = await gate.applyReviewed(name, args, sessionOf(extra));
+      const canonical = canonicalEditArgs(name, args);
+      if (typeof canonical === 'string') return fail(`Not applied: ${canonical}`);
+      const text = await gate.applyReviewed(name, canonical, sessionOf(extra));
       return text.startsWith('Not applied') ? fail(text) : ok(text);
     });
 
@@ -291,12 +295,12 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
         'read_file without the line-number prefix; keep it short but unique). Put all edits for one file in one call. The user reviews ' +
         'the change hunk by hunk; only accepted hunks are applied and the result says which ones.',
       inputSchema: {
-        path: z.string().min(1).describe('File path relative to the workspace root.'),
-        edits: z
-          .array(z.object({ old_text: z.string().describe('Exact existing text to replace.'), new_text: z.string().describe('Replacement text.') }))
-          .min(1)
-          .describe('Replacements applied in order.'),
-        description: z.string().optional().describe('One-line summary shown to the user in the review.'),
+        path: editString.describe('File path relative to the workspace root.'),
+        edits: z.union([
+          z.array(z.object({ old_text: editString.describe('Exact existing text to replace.'), new_text: editString.describe('Replacement text.') })).min(1),
+          z.string(),
+        ]).describe('Replacements applied in order, as an array or a JSON-encoded array.'),
+        description: editString.nullish().describe('One-line summary shown to the user in the review.'),
       },
       annotations: destructive,
     },
@@ -310,9 +314,9 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
       description:
         'Create a new file with the given content (or fully replace a small file). Prefer edit_file for existing files. The user reviews it before it is written.',
       inputSchema: {
-        path: z.string().min(1).describe('File path relative to the workspace root.'),
-        content: z.string().describe('Complete file content.'),
-        description: z.string().optional().describe('One-line summary shown to the user in the review.'),
+        path: editString.describe('File path relative to the workspace root.'),
+        content: editString.describe('Complete file content.'),
+        description: editString.nullish().describe('One-line summary shown to the user in the review.'),
       },
       annotations: destructive,
     },
@@ -370,7 +374,7 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
 export async function startEditorMcpServer(
   host: EditorToolHost,
   gate: EditGate,
-  opts: { port: number; token: string; log: Logger },
+  opts: { port: number; token: string; name?: string; log: Logger },
 ): Promise<EditorMcpServerHandle> {
   const { log, token } = opts;
   const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -416,7 +420,7 @@ export async function startEditorMcpServer(
             transports.delete(id);
           },
         });
-        const mcp = new McpServer({ name: MCP_SERVER_NAME, version: '0.1.0' }, { capabilities: { tools: {} } });
+        const mcp = new McpServer({ name: opts.name ?? MCP_SERVER_NAME, version: '0.1.0' }, { capabilities: { tools: {} } });
         registerTools(mcp, host, gate, log);
         servers.add(mcp);
         t.onclose = () => {

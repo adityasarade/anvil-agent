@@ -32,7 +32,6 @@ interface Entry {
   change: ProposedChange;
   outcome: ReviewOutcome;
   hunks: Hunk[];
-  at: number;
 }
 
 export interface EditSpec {
@@ -44,7 +43,6 @@ export type EditResult = { ok: true; text: string } | { ok: false; reason: strin
 
 export function createEditGate(host: EditorToolHost): EditGate {
   const entries = new Map<string, Entry>();
-  let seq = 0;
 
   function deny(reason: string): ApprovalDecision {
     return { status: 'deny', reason };
@@ -52,8 +50,9 @@ export function createEditGate(host: EditorToolHost): EditGate {
 
   async function reviewToolCall(call: ToolCallInfo, runId: string, tfSessionId: string): Promise<ApprovalDecision> {
     const tool = call.name;
-    const args = call.args ?? {};
     if (tool !== TOOL_NAMES.editFile && tool !== TOOL_NAMES.writeFile) return deny(`${tool} is not an edit tool.`);
+    const args = canonicalEditArgs(tool, call.args);
+    if (typeof args === 'string') return deny(args);
 
     let rel: string;
     try {
@@ -66,15 +65,12 @@ export function createEditGate(host: EditorToolHost): EditGate {
     const current = await host.readText(rel);
     let proposed: string;
     let isNewFile = false;
-    if (tool === TOOL_NAMES.editFile) {
+    if ('edits' in args) {
       if (current === null) return deny(`${rel} does not exist, use write_file to create it.`);
-      const edits = normalizeEdits(args.edits);
-      if (typeof edits === 'string') return deny(edits);
-      const res = applyTextEdits(current, edits, rel);
+      const res = applyTextEdits(current, args.edits, rel);
       if (!res.ok) return deny(res.reason);
       proposed = res.text;
     } else {
-      if (typeof args.content !== 'string') return deny('write_file needs a string `content`.');
       isNewFile = current === null;
       proposed = args.content;
       if (isNewFile && proposed === '') return deny(`Refusing to create an empty file ${rel}; write at least one line (for example a comment).`);
@@ -112,35 +108,32 @@ export function createEditGate(host: EditorToolHost): EditGate {
     }
 
     const key = keyOf(tfSessionId, tool, args);
-    entries.set(key, { key, sid: tfSessionId, tool, relPath: rel, runId, change, outcome, hunks, at: ++seq });
+    entries.set(key, { key, sid: tfSessionId, tool, relPath: rel, runId, change, outcome, hunks });
     return { status: 'allow' };
   }
 
   function findEntry(tool: string, args: Record<string, unknown>, sid: string | undefined): Entry | undefined {
-    if (sid) {
-      const exact = entries.get(keyOf(sid, tool, args));
-      if (exact) return exact;
-    } else {
-      // No session header: only an exact args match (in any session) is trusted.
-      const hash = argsHash(args);
-      for (const e of entries.values()) if (e.tool === tool && e.key.endsWith(hash)) return e;
-      return undefined;
-    }
+    if (!sid) return undefined;
+    const exact = entries.get(keyOf(sid, tool, args));
+    if (exact) return exact;
     let rel: string | undefined;
     try {
       rel = host.resolvePath(String(args.path ?? ''));
     } catch {
       return undefined;
     }
-    let best: Entry | undefined;
+    let match: Entry | undefined;
     for (const e of entries.values()) {
-      if (e.sid === sid && e.tool === tool && e.relPath === rel && (!best || e.at > best.at)) best = e;
+      if (e.sid !== sid || e.tool !== tool || e.relPath !== rel) continue;
+      if (match) return undefined;
+      match = e;
     }
-    return best;
+    return match;
   }
 
   async function applyReviewed(toolName: string, args: Record<string, unknown>, tfSessionId: string | undefined): Promise<string> {
-    const entry = findEntry(toolName, args ?? {}, tfSessionId);
+    const canonical = canonicalEditArgs(toolName, args);
+    const entry = typeof canonical === 'string' ? undefined : findEntry(toolName, canonical, tfSessionId);
     if (!entry) return 'Not applied: this edit was not reviewed by the user.';
     entries.delete(entry.key);
 
@@ -255,6 +248,24 @@ function msgOf(err: unknown): string {
 
 /* ───────────────────────── edit application ───────────────────────── */
 
+type EditArgs = { path: string; description?: string } & ({ edits: EditSpec[] } | { content: string });
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : undefined;
+}
+
+export function canonicalEditArgs(tool: string, raw: Record<string, unknown> = {}): EditArgs | string {
+  const path = asString(raw.path);
+  if (!path) return 'A file path is required.';
+  const description = asString(raw.description);
+  if (tool === TOOL_NAMES.editFile) {
+    const edits = normalizeEdits(raw.edits);
+    return typeof edits === 'string' ? edits : { path, edits, description };
+  }
+  const content = asString(raw.content);
+  return content === undefined ? 'write_file needs a string `content`.' : { path, content, description };
+}
+
 function normalizeEdits(raw: unknown): EditSpec[] | string {
   let list = raw;
   if (typeof list === 'string') {
@@ -268,10 +279,12 @@ function normalizeEdits(raw: unknown): EditSpec[] | string {
   const out: EditSpec[] = [];
   for (let i = 0; i < list.length; i++) {
     const e = list[i] as Record<string, unknown> | null;
-    if (!e || typeof e.old_text !== 'string' || typeof e.new_text !== 'string') {
+    const old_text = asString(e?.old_text);
+    const new_text = asString(e?.new_text);
+    if (old_text === undefined || new_text === undefined) {
       return `edit ${i + 1}: each edit must be an object with string old_text and new_text.`;
     }
-    out.push({ old_text: e.old_text, new_text: e.new_text });
+    out.push({ old_text, new_text });
   }
   return out;
 }

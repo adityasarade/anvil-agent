@@ -1,0 +1,73 @@
+{
+  "$comment": "Copy to config/models.json (git-ignored) or keep using this file: keys are read from environment variables (or ../.env / .env) by `npm run setup`, never stored here. Providers are registered in TrueForge; Anvil itself never calls a model provider. `chain` is the ordered fallback list Anvil uses (first = primary).",
+  "providers": [
+    {
+      "env": "GEMINI_API_KEY",
+      "manifest": {
+        "type": "google-gemini",
+        "auth": { "api_key": "${GEMINI_API_KEY}" },
+        "models": [
+          {
+            "model_id": "gemini-flash-latest",
+            "name": "gemini-flash-latest",
+            "properties": { "context_length": 1048576, "max_output_tokens": 65536 }
+          },
+          {
+            "model_id": "gemini-flash-lite-latest",
+            "name": "gemini-flash-lite-latest",
+            "properties": { "context_length": 1048576, "max_output_tokens": 65536 }
+          }
+        ]
+      }
+    },
+    {
+      "env": "GROQ_API_KEY",
+      "manifest": {
+        "type": "custom",
+        "name": "groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "auth": { "api_key": "${GROQ_API_KEY}" },
+        "models": [
+          {
+            "model_id": "openai/gpt-oss-120b",
+            "name": "gpt-oss-120b",
+            "properties": { "context_length": 131072, "max_output_tokens": 16384 }
+          }
+        ]
+      }
+    },
+    {
+      "env": "CEREBRAS_API_KEY",
+      "manifest": {
+        "type": "custom",
+        "name": "cerebras",
+        "base_url": "https://api.cerebras.ai/v1",
+        "auth": { "api_key": "${CEREBRAS_API_KEY}" },
+        "models": [
+          {
+            "model_id": "gpt-oss-120b",
+            "name": "gpt-oss-120b",
+            "properties": { "context_length": 131072, "max_output_tokens": 16384 }
+          }
+        ]
+      }
+    },
+    {
+      "env": "OLLAMA_BASE_URL",
+      "optional": true,
+      "manifest": {
+        "type": "custom",
+        "name": "ollama",
+        "base_url": "${OLLAMA_BASE_URL}",
+        "models": [
+          {
+            "model_id": "qwen2.5-coder:14b",
+            "name": "qwen2-5-coder-14b",
+            "properties": { "context_length": 32768, "max_output_tokens": 8192 }
+          }
+        ]
+      }
+    }
+  ],
+  "chain": ["google-gemini/gemini-flash-latest", "groq/gpt-oss-120b", "cerebras/gpt-oss-120b"]
+}

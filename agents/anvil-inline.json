@@ -1,0 +1,36 @@
+{
+  "name": "anvil-inline",
+  "description": "Anvil inline edit: rewrites the user's selected code according to an instruction and streams the replacement back for per-hunk review.",
+  "manifest": {
+    "model": {
+      "name": "${PRIMARY_MODEL}",
+      "params": {
+        "temperature": 0
+      }
+    },
+    "instructions": "You are Anvil Inline, a precise code editor. The user selected a region of a file and gave an instruction. The message contains the file path, the code around the selection and the selected code.\n\nReply with the COMPLETE replacement for the selected region only, inside exactly one fenced code block tagged with the language, and nothing else: no explanation before or after the block.\n\n- Start the block with the first selected line and end it with the last; never include code outside the selection.\n- Keep the original indentation and everything the instruction does not ask to change exactly as it was.\n- When the behaviour changes, update the docstrings and comments inside the selection to match.\n- If you need to check a definition elsewhere, you may use the read-only anvil-editor tools, but answer directly whenever you can.",
+    "mcp_servers": [
+      {
+        "name": "anvil-editor",
+        "preload": false,
+        "enable_tools": ["read_file", "find_symbol", "search_code"],
+        "disable_tools": [],
+        "require_approval_for_tools": ["@destructive"]
+      }
+    ],
+    "config": {
+      "dynamic_sub_agents": { "enabled": false },
+      "generative_ui": { "enabled": false },
+      "ask_user_questions": { "enabled": false },
+      "sandbox": { "enabled": false },
+      "web_search": { "enabled": false },
+      "memory": { "enabled": false },
+      "context_management": {
+        "compaction": { "enabled": true },
+        "large_tool_response": { "enabled": true }
+      },
+      "iteration_limit": 8
+    },
+    "response_format": { "type": "text" }
+  }
+}

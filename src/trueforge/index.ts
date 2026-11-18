@@ -23,7 +23,7 @@ import type {
 } from '../shared/contracts';
 import { APPROVAL_TOOLS, EDIT_TOOLS, MCP_SERVER_NAME, TOOL_NAMES } from '../shared/contracts';
 import type { Logger } from '../shared/log';
-import { classifyError, errorMessage, isConnectionError, shortError } from './errors';
+import { classifyError, errorMessage, isConnectionError, isRateLimited, retryDelayMs, shortError } from './errors';
 import { TrueForgeHttpError, TrueForgeUnreachableError, apiErrorMessage, requestJson } from './http';
 import { TurnTranslator, toToolCallInfo, type ApprovalRef, type TurnOutcome } from './translate';
 
@@ -711,9 +711,10 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
           };
         }
         lastError = error;
-        if (cls === 'transient' && attempt < maxAttempts) {
-          const delayMs = backoffBase * 2 ** (attempt - 1);
-          emit(run, { type: 'model.retry', runId: run.runId, model, attempt: attempt + 1, maxAttempts, delayMs, error: shortError(error) });
+        const attemptsHere = isRateLimited(error) ? Math.max(maxAttempts, 5) : maxAttempts;
+        if (cls === 'transient' && attempt < attemptsHere) {
+          const delayMs = retryDelayMs(error, attempt, backoffBase);
+          emit(run, { type: 'model.retry', runId: run.runId, model, attempt: attempt + 1, maxAttempts: attemptsHere, delayMs, error: shortError(error) });
           await sleep(run, delayMs);
           continue;
         }

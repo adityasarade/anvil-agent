@@ -56,3 +56,27 @@ export function isConnectionError(err: unknown): boolean {
   const msg = errorMessage(err);
   return /ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|fetch failed|socket hang up|UND_ERR_CONNECT|Network error/i.test(msg);
 }
+
+const RATE_LIMIT_RE = /\b429\b|quota|rate[\s_-]?limit|resource[\s_-]?exhausted|too many requests/i;
+const OVERLOAD_RE = /\b(503|529)\b|high demand|overloaded|unavailable/i;
+
+/** Provider quota / rate-limit errors: worth more patience than a dropped connection. */
+export function isRateLimited(message: string): boolean {
+  return RATE_LIMIT_RE.test(message ?? '');
+}
+
+/**
+ * Backoff before retrying the same model. Free tiers reset per minute, so a 1-2 s retry
+ * after a quota error is wasted: honour the provider's retry hint when it gives one,
+ * otherwise wait 15s/30s/60s for quota errors, 5s/10s/20s for overload, and
+ * base·2^n (1s/2s/4s) for connection errors. `base` scales everything (tests use a tiny base).
+ */
+export function retryDelayMs(message: string, attempt: number, base = 1000): number {
+  const msg = message ?? '';
+  const scale = base / 1000;
+  const hint = /retry (?:in|after) ([\d.]+)\s*s/i.exec(msg) ?? /"?retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s/i.exec(msg);
+  if (hint) return Math.round(Math.min(60_000, parseFloat(hint[1]) * 1000 + 500) * scale);
+  if (RATE_LIMIT_RE.test(msg)) return Math.round(Math.min(60_000, 15_000 * 2 ** (attempt - 1)) * scale);
+  if (OVERLOAD_RE.test(msg)) return Math.round(Math.min(30_000, 5_000 * 2 ** (attempt - 1)) * scale);
+  return base * 2 ** (attempt - 1);
+}

@@ -114,3 +114,18 @@ describe('substituteModel', () => {
     expect(m).toEqual({ model: { name: 'groq/gpt-oss-120b', params: { temperature: 0 } }, instructions: 'use groq/gpt-oss-120b' });
   });
 });
+
+import { retryDelayMs as _retryDelayMs, isRateLimited as _isRateLimited } from '../src/trueforge/errors';
+import { describe as _describe, it as _it, expect as _expect } from 'vitest';
+
+_describe('retryDelayMs', () => {
+  _it('waits longer for quota errors and honours retry hints', () => {
+    _expect(_isRateLimited('[Model Error] Request failed (429): You exceeded your current quota')).toBe(true);
+    _expect(_retryDelayMs('[Model Error] Request failed (429): quota', 1)).toBe(15_000);
+    _expect(_retryDelayMs('[Model Error] Request failed (429): quota', 3)).toBe(60_000);
+    _expect(_retryDelayMs('Please retry in 21.4s.', 1)).toBe(21_900);
+    _expect(_retryDelayMs('[Model Error] Request failed (503): high demand', 2)).toBe(10_000);
+    _expect(_retryDelayMs('[Model Error] Cannot connect to API: connect ECONNREFUSED', 2)).toBe(2_000);
+    _expect(_retryDelayMs('(429) quota', 1, 10)).toBe(150);
+  });
+});

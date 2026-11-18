@@ -141,6 +141,18 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
     return beforeText + c + afterText;
   };
 
+  // While tokens stream in, keep the not-yet-regenerated tail of the selection
+  // visible as unchanged lines, so the preview reads as an in-place rewrite
+  // instead of "everything below the cursor was deleted".
+  const selectedLines = selectedText.replace(/\r\n/g, '\n').split('\n');
+  const buildStreaming = (code: string): string => {
+    const streamedLines = code.replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n').length;
+    const tail = selectedLines.slice(streamedLines);
+    if (!tail.length) return build(code);
+    const joined = code.replace(/\n+$/, '') + '\n' + tail.join('\n');
+    return build(joined);
+  };
+
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
   status.text = '$(loading~spin) Anvil: generating… (Esc to stop)';
   status.tooltip = 'Click to stop';
@@ -162,7 +174,7 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
       lastMsg.set(key, e.messageId);
       byThread.set(key, t + e.text);
       const { code } = extractCode(currentText());
-      stream.update(code.trim() === '' ? original : build(code));
+      stream.update(code.trim() === '' ? original : buildStreaming(code));
     } else if (e.type === 'model.retry') {
       vscode.window.setStatusBarMessage(
         `Anvil: ${e.model} failed (${short(e.error, 60)}) — retry ${e.attempt}/${e.maxAttempts} in ${Math.round(e.delayMs / 100) / 10}s`, 8000);

@@ -41,8 +41,17 @@ function scheduleScroll(): void {
   });
 }
 
+// Only a user-initiated scroll (wheel, touch, keys, scrollbar drag) may stop auto-follow;
+// content growing in large chunks (a tool card, a context card) must not.
+let userScrolling = false;
+for (const ev of ['wheel', 'touchmove', 'keydown', 'mousedown'] as const) {
+  scroller.addEventListener(ev, () => { userScrolling = true; }, { passive: true });
+}
 scroller.addEventListener('scroll', () => {
-  follow = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 48;
+  const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 48;
+  if (nearBottom) follow = true;
+  else if (userScrolling) follow = false;
+  userScrolling = false;
 }, { passive: true });
 const observer = new ResizeObserver(scheduleScroll);
 observer.observe(transcriptContent);
@@ -122,6 +131,8 @@ window.addEventListener('message', ({ data }: MessageEvent<HostToPanel>) => {
       const event = data.event;
       transcript.ingest(event);
       if (event.type === 'run.started') {
+        follow = true;
+        scheduleScroll();
         latestRun = { id: event.runId, sessionId: event.sessionId, model: event.model };
         showSession(event.sessionUrl);
         showModels(event.model);

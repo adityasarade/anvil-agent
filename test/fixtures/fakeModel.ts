@@ -189,13 +189,13 @@ function toolCall(req: FakeModelRequest, name: string, args: Record<string, unkn
 function decide(req: FakeModelRequest, editPath: string, edits: Array<{ old_text: string; new_text: string }>): Plan {
   if (req.model === 'echo') return { text: `echo: ${lastUserText(req).slice(0, 200)}` };
   if (req.model === 'effect-fail') return { toolCall: toolCall(req, 'edit_file', { path: editPath, edits }) };
-  if (req.model === 'cmd') {
+  if (req.model === 'cmd' || req.model === 'fail-cmd') {
     // Runs a long command (for cancellation tests); the pid lands in child.pid in the workspace.
     const ran = req.messages.some((m) => (m.tool_calls ?? []).some((tc) => tc.function.name.endsWith('run_command') || tc.function.arguments.includes('run_command')));
-    if (!ran && req.tools.length) return { toolCall: toolCall(req, 'run_command', { command: 'sleep 60 & echo $! > child.pid; wait', timeout_seconds: 120 }) };
+    if (!ran && req.tools.length) return { toolCall: toolCall(req, 'run_command', { command: req.model === 'fail-cmd' ? 'echo verification-failed; exit 7' : 'sleep 60 & echo $! > child.pid; wait', timeout_seconds: 120 }) };
     return { text: 'command finished' };
   }
-  if (req.model !== 'script' && req.model !== 'scout') return { text: `model ${req.model} says hi` };
+  if (req.model !== 'script' && req.model !== 'scout' && req.model !== 'multi') return { text: `model ${req.model} says hi` };
   // Requests without tools (e.g. session title generation) just get text.
   if (!req.tools.length) return { text: 'Anvil test session' };
 
@@ -233,6 +233,14 @@ function decide(req: FakeModelRequest, editPath: string, edits: Array<{ old_text
     }
   } else if (!called.some((n) => n.endsWith('retrieve_context'))) {
     return { text: 'Let me find the relevant code.', toolCall: toolCall(req, 'retrieve_context', { query: lastUserText(req).slice(0, 200), budget_tokens: 2000 }) };
+  }
+  if (req.model === 'multi') {
+    const writes = called.filter(name => name.endsWith('edit_file') || name.endsWith('write_file')).length;
+    if (writes === 0) return { toolCall: toolCall(req, 'edit_file', { path: editPath, edits: edits.slice(0, 1) }) };
+    if (writes === 1) return { toolCall: toolCall(req, 'write_file', { path: 'tests/test_app.py', content: 'def test_greeting():\n    assert True\n' }) };
+    if (writes === 2) return { toolCall: toolCall(req, 'write_file', { path: 'docs/usage.md', content: '# Greeting\n\nThe greeting says hello, world.\n' }) };
+    if (!called.some(name => name.endsWith('run_command'))) return { toolCall: toolCall(req, 'run_command', { command: 'node -e "process.stdout.write(\'verified\')"' }) };
+    return { text: 'Scripted three-file protocol test completed.' };
   }
   if (!called.some((n) => n.endsWith('edit_file'))) {
     return { toolCall: toolCall(req, 'edit_file', { path: editPath, edits, description: 'Greeting and int addition' }) };

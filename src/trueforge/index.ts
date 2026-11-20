@@ -23,7 +23,7 @@ import type {
 } from '../shared/contracts';
 import { APPROVAL_TOOLS, EDIT_TOOLS, MCP_SERVER_NAME, TOOL_NAMES } from '../shared/contracts';
 import type { Logger } from '../shared/log';
-import { classifyError, errorMessage, isConnectionError, isRateLimited, retryDelayMs, shortError } from './errors';
+import { classifyError, errorMessage, isConnectionError, retryDelayMs, shortError } from './errors';
 import { TrueForgeHttpError, TrueForgeUnreachableError, apiErrorMessage, requestJson } from './http';
 import { TurnTranslator, toToolCallInfo, type ApprovalRef, type TurnOutcome } from './translate';
 
@@ -38,6 +38,8 @@ export interface TrueForgeSettings {
   retryMaxAttempts: number;
   coderAgent: string;
   inlineAgent: string;
+  modelParams?: Record<string, Record<string, unknown>>;
+  compactionTokens?: number;
 }
 
 export interface TrueForgeServiceDeps {
@@ -244,6 +246,15 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
 
   function specFor(base: Record<string, any>, model: string): Record<string, any> {
     const spec: Record<string, any> = { ...base, model: { ...(base.model ?? {}), name: model } };
+    const params = deps.settings().modelParams?.[model];
+    if (params) spec.model.params = { ...(base.model?.params ?? {}), ...params };
+    const threshold = deps.settings().compactionTokens;
+    if (threshold !== undefined && Number.isFinite(threshold) && threshold >= 2000) {
+      spec.config = { ...base.config, context_management: { ...base.config?.context_management,
+        compaction: { ...base.config?.context_management?.compaction, enabled: true,
+          trigger: { type: 'input_tokens', value: Math.floor(threshold) } },
+      } };
+    }
     const editorNames = new Set([MCP_SERVER_NAME]);
     if (Array.isArray(base.mcp_servers)) {
       spec.mcp_servers = base.mcp_servers.map((server: { name: string }) => {
@@ -608,7 +619,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
 
   async function execute(run: RunState): Promise<void> {
     const settings = deps.settings();
-    const maxAttempts = Math.max(1, Math.min(10, Math.floor(settings.retryMaxAttempts || 1)));
+    const maxAttempts = Math.max(1, Math.min(6, Math.floor(settings.retryMaxAttempts || 1)));
     let chain: string[];
     try {
       chain = await modelChain();
@@ -717,7 +728,7 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
           };
         }
         lastError = error;
-        const attemptsHere = isRateLimited(error) ? Math.max(maxAttempts, 5) : maxAttempts;
+        const attemptsHere = maxAttempts;
         if (cls === 'transient' && attempt < attemptsHere) {
           const delayMs = retryDelayMs(error, attempt, backoffBase);
           emit(run, { type: 'model.retry', runId: run.runId, model, attempt: attempt + 1, maxAttempts: attemptsHere, delayMs, error: shortError(error) });

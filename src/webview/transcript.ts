@@ -22,6 +22,7 @@ interface Thread {
 }
 
 interface Subagent extends Thread {
+  section: HTMLDetailsElement;
   label: HTMLElement;
   status: HTMLElement;
   output: HTMLElement;
@@ -118,6 +119,7 @@ function upsertTool(run: Run, thread: Thread, callId: string, name: string, serv
 
 function setToolStatus(tool: ToolRow, status: ToolStatus): void {
   tool.currentStatus = status;
+  tool.row.dataset.status = status;
   paintChip(tool.status, ...TOOL_STATUS[status]);
 }
 
@@ -125,8 +127,9 @@ function subagentFor(run: Run, threadId: string): Subagent {
   const existing = run.subagents.get(threadId);
   if (existing) return existing;
 
-  const section = element('section', 'subagent');
-  const header = element('div', 'subagent-header');
+  const section = element('details', 'subagent');
+  section.open = true;
+  const header = element('summary', 'subagent-header');
   const label = element('h3', '', `Sub-agent: ${threadId}`);
   const status = chip('Running', 'accent');
   header.append(label, status);
@@ -136,7 +139,7 @@ function subagentFor(run: Run, threadId: string): Subagent {
   section.append(header, body, output);
   run.main.body.append(section);
 
-  const subagent = { label, status, body, messages: new Map<string, TextBlock>(), output };
+  const subagent = { section, label, status, body, messages: new Map<string, TextBlock>(), output };
   run.subagents.set(threadId, subagent);
   return subagent;
 }
@@ -147,6 +150,7 @@ function threadFor(run: Run, threadId: string | null): Thread {
 
 function scoutOutput(thread: Subagent, ok: boolean, output: string): void {
   paintChip(thread.status, ok ? 'Done' : 'Error', ok ? 'success' : 'error');
+  thread.section.open = !ok;
   if (!output.trim()) return;
   const list = element('ul', 'scout-list');
   for (const line of output.trim().split(/\r?\n/)) {

@@ -12,6 +12,8 @@ export interface InlineEditDeps {
   workspaceRoot: string;
   log: Logger;
   trackRun(handle: RunHandle): vscode.Disposable;
+  acquireRun?(): { signal: AbortSignal; dispose(): void } | undefined;
+  onEvent?(event: UiEvent): void;
 }
 
 let counter = 0;
@@ -27,14 +29,20 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, deps: InlineEdi
       void vscode.window.showInformationMessage('Anvil: an inline edit is already running. Press Esc to stop it.');
       return;
     }
+    const lease = deps.acquireRun?.();
+    if (deps.acquireRun && !lease) {
+      void vscode.window.showInformationMessage('Anvil: a run is already in progress. Press Esc to stop it.');
+      return;
+    }
     running = true;
     try {
-      await runInline(deps);
+      await runInline(deps, lease?.signal);
     } catch (e) {
       deps.log.error('inline edit failed', e);
       void vscode.window.showErrorMessage(`Anvil inline edit failed: ${e instanceof Error ? e.message : String(e)}. No files were changed.`);
     } finally {
       running = false;
+      lease?.dispose();
     }
   });
   ctx.subscriptions.push(d);
@@ -65,7 +73,7 @@ function findDefinitions(deps: InlineEditDeps, selected: string, relPath: string
   }
 }
 
-async function runInline(deps: InlineEditDeps): Promise<void> {
+export async function runInline(deps: InlineEditDeps, preparationSignal?: AbortSignal, testInstruction?: string): Promise<void> {
   const { review, trueforge, log } = deps;
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.uri.scheme !== 'file') {
@@ -79,10 +87,8 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
   if (!sel.isEmpty && sel.end.character === 0 && endLine > startLine) endLine--;
   endLine = Math.min(endLine, doc.lineCount - 1);
 
-  const instruction = (
-    await vscode.window.showInputBox({ title: 'Anvil: Edit selection', placeHolder: 'Describe the change…', ignoreFocusOut: true })
-  )?.trim();
-  if (!instruction) return;
+  const instruction = (testInstruction ?? await vscode.window.showInputBox({ title: 'Anvil: Edit selection', placeHolder: 'Describe the change…', ignoreFocusOut: true }))?.trim();
+  if (!instruction || preparationSignal?.aborted) return;
 
   const original = doc.getText();
   const eol = doc.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
@@ -164,6 +170,7 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
   };
 
   const onEvent = (e: UiEvent): void => {
+    deps.onEvent?.(e);
     if (e.type === 'model.retry' || e.type === 'model.fallback') {
       byThread.clear();
       lastMsg.clear();
@@ -232,7 +239,12 @@ async function runInline(deps: InlineEditDeps): Promise<void> {
       return;
     }
     const text = result.text || currentText();
-    const { code } = extractCode(text);
+    const { code, fenced, closed } = extractCode(text);
+    if (fenced && !closed) {
+      stream.cancel();
+      void vscode.window.showWarningMessage('Anvil: the model returned an incomplete code block. No files were changed; try again.');
+      return;
+    }
     if (!code.trim()) {
       stream.cancel();
       void vscode.window.showWarningMessage('Anvil: the model returned no code. No files were changed.');

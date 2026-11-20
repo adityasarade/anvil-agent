@@ -44,7 +44,17 @@ export function createJournal(log: Logger): JournalImpl {
         const edit = new vscode.WorkspaceEdit();
         edit.replace(c.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), c.before);
         if (!(await vscode.workspace.applyEdit(edit))) throw new Error('edit was rejected');
-        if (!(await doc.save())) throw new Error(`Could not save ${c.relPath}`);
+        try {
+          if (!(await doc.save())) throw new Error(`Could not save ${c.relPath}`);
+        } catch (error) {
+          // Keep a failed undo retryable without overwriting concurrent user edits.
+          if (doc.getText() === c.before) {
+            const rollback = new vscode.WorkspaceEdit();
+            rollback.replace(c.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(c.before.length)), c.after);
+            await vscode.workspace.applyEdit(rollback);
+          }
+          throw error;
+        }
       }
       c.undone = true;
       emitter.fire();

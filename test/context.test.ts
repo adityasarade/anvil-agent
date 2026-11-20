@@ -10,7 +10,10 @@ import { retrieve } from '../src/context/retrieve';
 import type { RetrievalResult } from '../src/shared/contracts';
 
 const taskB = 'Add a new built-in CLI command flask config that prints the loaded application\'s configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "***". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.';
-const flask = resolve('/Users/aditya.sarade/Desktop/Hack/forge-a-thon/flask');
+const flask = resolve(process.env.ANVIL_FLASK_ROOT || '.demo/flask');
+if (process.env.ANVIL_REQUIRE_INTEGRATION === '1' && !existsSync(join(flask, 'src/flask/helpers.py'))) {
+  throw new Error(`Pinned Flask fixture missing at ${flask}. Run npm run demo:prepare.`);
+}
 
 describe.skipIf(!existsSync(flask))('Flask context index', () => {
   const engine = createContextEngine({ root: flask });

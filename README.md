@@ -2,18 +2,18 @@
 
 **An editor-native coding agent for VS Code whose agent loop runs on [TrueForge](https://github.com/truefoundry/trueforge).**
 
-Built for the TrueFoundry Forge-a-thon (Techfest 2026-27, IIT Bombay).
+Built by **Team Asterix** for the TrueFoundry Forge-a-thon (Techfest 2026-27, IIT Bombay).
 
 Anvil is a thin, careful client of a TrueForge agent. TrueForge runs the loop: sessions, turns, streaming, sub-agents, compaction and tool approvals. Anvil spends its effort on the two things that decide whether a coding agent works:
 
 1. **What the model sees.** A budgeted, explainable context engine for repositories larger than any context window.
-2. **What reaches disk.** Every edit is reviewed hunk by hunk, nothing is written silently, every applied change can be undone, and a cancelled or failed run leaves the workspace clean.
+2. **What reaches disk.** Every edit is reviewed hunk by hunk, nothing is written silently, every applied change can be undone, and cancelled or failed runs discard uncommitted proposals while preserving already accepted edits in the undo journal.
 
 | Capability | How Anvil does it |
 |---|---|
 | **Inline edit** | Select code, press <kbd>Cmd/Ctrl+Alt+I</kbd> and type an instruction. The replacement streams live into a review document, where you **accept or reject each hunk**. |
 | **Agent mode** | A panel drives a TrueForge agent through a tool loop (`retrieve_context`, `search_code`, `find_symbol`, `read_file`, `edit_file`, `write_file`, `run_command`, …). You never name files: a `context-scout` **sub-agent** finds them. |
-| **Context assembly** | `@file` / `@symbol` mentions, a ranked repo map on the first turn, and automatic **hybrid retrieval under a hard token budget**. The panel shows *which files were chosen and why*. |
+| **Context assembly** | `@file` / `@symbol` mentions, a ranked repo map on the first turn, and automatic **hybrid retrieval under a configurable estimated token budget**. The panel shows *which files were chosen and why*. |
 | **Diff review** | TrueForge **tool approval drives the review**: an `edit_file` call pauses the turn, the hunks open in the editor, and only accepted hunks are applied. Changes can be undone per change or per run. |
 | **Streaming & cancel** | Tokens render as TrueForge streams them. <kbd>Esc</kbd> or **Stop** cancels the TrueForge turn instantly, closes pending reviews and kills running commands. Partial edits are never applied. |
 | **Resilience** | Transient model errors are retried with visible backoff. Auth errors or exhausted retries fall back **automatically to the next model configured in TrueForge**, with no user action and the workspace unchanged. |
@@ -71,7 +71,7 @@ The challenge's core problem is that pallets/flask (~17k LOC) does not fit in a 
 
 1. **Repo map (first turn, ~1.2k tokens).** A ranked outline of files and their top-level signatures (Aider-style). It is ranked by import in-degree and query relevance, so the model knows the landscape before it looks at any code.
 2. **Explicit mentions.** `@file` attaches the whole file if it fits in 1.5k tokens, otherwise an outline. `@symbol` attaches the definition span.
-3. **Automatic retrieval (`retrieve_context`, default budget 4,000 tokens, hard cap 5,500).** This step uses no embeddings and makes no model calls:
+3. **Automatic retrieval (`retrieve_context`, default ceiling 4,000 estimated tokens, transport cap 5,500).** This step uses no embeddings and makes no model calls:
    - **BM25F** over ~400-token chunks, with field weights path ×2.5, symbol names ×3, docstrings/comments ×1.2 and body ×1.
    - **Symbol-name boosts** for code identifiers in the request.
    - **Structural expansion**: test↔source pairing, docs whose sections mention the top files' symbols, a 1-hop import graph, and intent heuristics ("covered by a test" → include the best test file, "documented" → include the best docs file, "alongside the other X" → prefer files defining several sibling X).
@@ -80,7 +80,7 @@ The challenge's core problem is that pallets/flask (~17k LOC) does not fit in a 
 
 The `context-scout` sub-agent calls `retrieve_context`, confirms with a few targeted `search_code`/`find_symbol`/`read_file` calls, and returns `path:start-end, why`. The panel renders every retrieval as a **context card** with a budget meter, the chosen files, the reasons and the omissions.
 
-On flask 3.1.3 the index builds in about 90 ms (215 files, 2,817 chunks). For the Task B request, `src/flask/cli.py`, `tests/test_cli.py` and `docs/cli.rst` rank #1 to #3, using 3,946 of 4,000 tokens.
+On the pinned Flask 3.1.3 fixture, the index contains 215 files and 2,817 chunks. The tests measure build/retrieval time on the current machine. For the Task B request, `src/flask/cli.py`, `tests/test_cli.py` and `docs/cli.rst` rank #1 to #3, using 3,946 of 4,000 tokens.
 
 ---
 
@@ -109,7 +109,7 @@ This binds to `127.0.0.1:8790` (UI at http://127.0.0.1:8790), allowlists loopbac
 ### 2. Configure models in TrueForge
 
 ```bash
-cp .env.example .env       # then fill in at least one key (keys never leave your machine)
+cp .env.example .env       # fill in your keys locally; setup registers them with local TrueForge
 npm run setup              # registers providers + agents in TrueForge, prints the model chain
 npm run setup -- --status  # health, providers, models, agents
 ```
@@ -143,32 +143,63 @@ Open any repository in VS Code. The status bar shows `Anvil: <model> +N fallback
 ## Reproducing the Round 1 tasks (pallets/flask 3.1.3)
 
 ```bash
-scripts/demo/prepare-flask.sh ../flask    # clones tag 3.1.3 (22d92470), creates .venv (excluded locally), runs baseline checks
-code ../flask
+npm run demo:prepare    # clones tag 3.1.3 (22d92470), creates .venv (excluded locally), runs baseline checks
+code .demo/flask
 ```
 
 | Task | Instruction (verbatim) | Verify |
 |---|---|---|
 | **A. Inline edit** | In `src/flask/helpers.py`, select `get_debug_flag` and run: *Treat the values 'off' and 'n' as false as well, case-insensitively, and update the docstring to list every value that is treated as false.* | `FLASK_DEBUG=off python -c "from flask.helpers import get_debug_flag; print(get_debug_flag())"` prints `False` |
 | **B. Agent mode** | In the panel, with no files named: *Add a new built-in CLI command flask config that prints the loaded application's configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "\*\*\*". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.* | `pytest tests/test_cli.py -q` passes; `flask --app <any app> config` prints masked JSON; diff touches ≥ 3 files |
-| **C. Resilience** | `npm run setup -- --break-primary` (primary gets an invalid key), then repeat Task A | the editor stays responsive, the panel/notification shows the failure and the automatic switch to the fallback model, and `git status` shows nothing changed. Restore with `npm run setup -- --restore` |
+| **C. Resilience** | `npm run demo:failure -- --fallback provider/model`, select the printed chain, then repeat Task A in a separate clean fixture | Show retries, automatic fallback, and a responsive editor. **Reject the proposal** and show clean `git status`. Restore the normal chain, reconnect, and run `npm run demo:failure -- --remove`. |
 
 To show an *unreachable endpoint* instead of a bad key, register a `custom` provider whose `base_url` points at a closed local port such as `http://127.0.0.1:9909/v1` and put it first in `anvil.models`. Anvil retries with backoff (1s, 2s) and then falls back.
 
 ## Models
 
+No storage for local models? Use the [free cloud setup](docs/submission/free-cloud-models.md). Hosted Qwen is available through the existing Groq integration; OpenRouter's free router is an optional independent backup. The compact settings example reduces requests for limited free endpoints.
+
 Anvil is provider-agnostic: it works with whatever TrueForge is configured with, and the chain is just an ordered list of TrueForge model names. The defaults in `config/models.example.json` are free-tier friendly:
 
 | Role | Model (TrueForge name) | Where it runs | Cost | Notes |
 |---|---|---|---|---|
-| primary | `google-gemini/gemini-flash-lite-latest` | Google AI Studio API | free tier | ran all three Round 1 tasks; free tier is ~15 requests/min, so Anvil waits on 429s using the provider's retry hint |
-| fallback | `groq/gpt-oss-120b` | Groq API (OpenAI-compatible) | free tier | very fast; free tier caps it at 8k tokens/min, which is ample for inline edits (Task C) |
-| fallback 2 | `google-gemini/gemini-flash-latest` | Google AI Studio API | free tier | stronger, but often returns 503 "high demand" on the free tier |
+| primary | `google-gemini/gemini-flash-lite-latest` | Google AI Studio API | account-dependent | example configuration; verify current access and quota in your own account |
+| fallback | `groq/gpt-oss-120b` | Groq API (OpenAI-compatible) | account-dependent | example fallback; verify current access and quota in your own account |
+| fallback 2 | `google-gemini/gemini-flash-latest` | Google AI Studio API | account-dependent | optional alternative; availability varies |
 | optional | `cerebras/gpt-oss-120b`, `ollama/*` | Cerebras API / local Ollama | free tier / local | registered by `npm run setup` when their env vars are set |
 
-Total model spend for development, testing and the demo: **$0** (free tiers only).
+Scripted-model integration checks require no model-provider calls. Record actual real-model usage and cost in your submission write-up; example configurations are not evidence of a completed live demo.
 
 Switch models with **Anvil: Select Model Chain** (status bar), or edit `anvil.models`.
+
+
+## Panel workflow
+
+The Anvil panel has a theme-aware conversation view, compact tool activity, collapsible scout results, and a composer that grows with your message. Starter prompts fill the composer for you to edit before sending. Unsent text is kept locally using the editor webview state, so reopening the panel restores your draft.
+
+Use **@** to mention a file or symbol. The **/** menu offers `/new`, `/model`, and `/session`; these run locally without spending model quota. **Latest** returns to the newest activity after you scroll up. Edit and command approvals, per-hunk review, and undo remain part of the workflow. The panel keeps Anvil’s own branding and is inspired by the compact conversation workflow documented for [Claude Code in VS Code](https://code.claude.com/docs/en/vs-code).
+
+Run `npm run test:webview` to exercise the bundled panel in Chrome at narrow dark/light sidebar widths, including draft recovery, local commands, cancellation, tool activity, and approvals. It uses no cloud models; set `ANVIL_CHROME` if Chrome is installed elsewhere. Screenshots and results are saved under the ignored `.artifacts/` directory.
+
+## Verification and submission
+
+The [3:55 demo script](docs/submission/video-script.md) provides concise narration and screen actions. The [recording runbook](docs/submission/demo.md) contains the exact A/B/C prompts, acceptance commands, cleanup, and four-minute recording sequence. The [write-up template](docs/submission/writeup.html) follows all eight required headings; fill team information, actual models/costs, and real video timestamps before PDF export with `npm run writeup:pdf`.
+
+For **Antigravity**, use **Extensions: Install from VSIX…** to install `anvil-agent.vsix`. F5 uses the included development launch configuration. `npm run test:extension` auto-detects the installed macOS Antigravity or VS Code CLI; set `ANVIL_EDITOR_CLI=/absolute/path/to/code` elsewhere. It uses an isolated test profile and reports the editor/version in `.artifacts/editor-result.json`.
+
+Run `npm run demo:prepare` before `npm run verify:submission`. The default pinned fixture is `.demo/flask`; override it with `ANVIL_FLASK_ROOT`. Strict verification refuses a dirty fixture or skipped required integration tests, builds the VSIX, and launches the actual editor smoke test. It needs network access for the pinned TrueForge package on first use and permission to listen on localhost and launch the editor. Automated scripted-model success does **not** establish live-model completion of Tasks A, B, and C.
+
+Read-only checks of agent-produced changes:
+
+```sh
+npm run demo:verify -- A
+npm run demo:verify -- B
+npm run demo:verify -- C --root .demo/flask-resilience
+```
+
+These commands check outcomes; they do not implement the task. Keep a separate clean fixture for C and for strict baseline checks. Preparation never resets an existing checkout. The local `.env`, `.demo/`, and `.artifacts/` are ignored, and demo files and the challenge PDF are excluded from the VSIX.
+
+Limitations: one workspace folder per window; in-memory undo history; no command sandbox; provider-specific tool quality and quota; Python-oriented structural retrieval; character-based token estimates. Already accepted edits remain after cancellation. Approved commands and editor save participants can introduce effects outside a proposed hunk, so inspect the final diff. Standard VS Code requires a separate smoke run before it is claimed as tested.
 
 ## Starting point
 
@@ -181,8 +212,13 @@ We evaluated forking Continue, Cline, Roo Code and opencode for the editor side.
 ```bash
 npm run build        # esbuild: dist/extension.js + dist/webview.js
 npm run typecheck
-npm test             # vitest: hunks, review, context (against ../flask if present),
-                     # TrueForge + MCP end-to-end tests against a real TrueForge with a scripted fake model
+npm test                    # all available suites; optional dependencies may skip
+npm run test:unit           # unit/context tests without a TrueForge process
+npm run test:integration    # required live TrueForge + MCP tests (scripted model)
+npm run test:flask          # required pinned-Flask retrieval tests
+npm run test:extension      # actual editor activation, CodeLens, apply, undo, cancel
+npm run verify:submission   # strict automated checks, packaging, real editor smoke test
+ANVIL_LIVE_TASK=A npm run test:live  # opt-in real-model rehearsal, isolated editor profile
 ```
 
 ```
@@ -202,7 +238,7 @@ test/              vitest suites and fixtures
 ## Acknowledgements and tools
 
 - Built on [TrueForge](https://github.com/truefoundry/trueforge) (MIT), the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) (MIT), [jsdiff](https://github.com/kpdecker/jsdiff) (BSD-3-Clause) and [marked](https://github.com/markedjs/marked) (MIT).
-- AI coding assistants used while building: Claude Code (Claude Opus / Sonnet) and OpenAI Codex CLI (GPT-6.2 Sol / Astra).
+- AI coding assistants used while building: Claude Code and OpenAI Codex. Declare the exact assistants and models actually used by the team in the final write-up.
 
 ## License
 

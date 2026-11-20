@@ -29,6 +29,9 @@ export function classifyError(message: string, opts: { modelError?: boolean } = 
   const modelish = opts.modelError ?? isModelError(msg);
   if (!modelish) return 'other';
   if (AUTH_RE.test(msg) || MODEL_404_RE.test(msg)) return 'auth';
+  // Sleeping cannot fix an oversized request. These errors can also mention
+  // quota or "try again", so classify them before the transient patterns.
+  if (/\b413\b|request (?:is )?too large|context_length_exceeded|maximum context length|exceeds? (?:the )?(?:model'?s? )?context/i.test(msg)) return 'model';
   if (TRANSIENT_RE.test(msg)) return 'transient';
   return 'model';
 }
@@ -74,7 +77,7 @@ export function isRateLimited(message: string): boolean {
 export function retryDelayMs(message: string, attempt: number, base = 1000): number {
   const msg = message ?? '';
   const scale = base / 1000;
-  const hint = /retry (?:in|after) ([\d.]+)\s*s/i.exec(msg) ?? /"?retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s/i.exec(msg);
+  const hint = /(?:retry|try again) (?:in|after) ([\d.]+)\s*s/i.exec(msg) ?? /"?retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s/i.exec(msg);
   if (hint) return Math.round(Math.min(60_000, parseFloat(hint[1]) * 1000 + 500) * scale);
   if (RATE_LIMIT_RE.test(msg)) return Math.round(Math.min(60_000, 15_000 * 2 ** (attempt - 1)) * scale);
   if (OVERLOAD_RE.test(msg)) return Math.round(Math.min(30_000, 5_000 * 2 ** (attempt - 1)) * scale);

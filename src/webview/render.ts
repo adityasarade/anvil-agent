@@ -1,10 +1,16 @@
 import { Marked } from 'marked';
 import type { HostToPanel, PanelToHost, RetrievalResult } from '../shared/contracts';
 
-declare function acquireVsCodeApi(): { postMessage(message: PanelToHost): void };
+declare function acquireVsCodeApi(): {
+  postMessage(message: PanelToHost): void;
+  getState(): { draft?: string } | undefined;
+  setState(state: { draft: string }): void;
+};
 
 const vscode = acquireVsCodeApi();
 export const post = (message: PanelToHost): void => vscode.postMessage(message);
+export const readDraft = (): string => vscode.getState()?.draft ?? '';
+export const saveDraft = (draft: string): void => vscode.setState({ draft });
 export type MentionResults = Extract<HostToPanel, { type: 'mentionResults' }>;
 
 export function element<K extends keyof HTMLElementTagNameMap>(

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StartRunOptions, UiEvent } from '../src/shared/contracts';
-import { createTrueForgeService } from '../src/trueforge';
+import { createTrueForgeService, type TrueForgeSettings } from '../src/trueforge';
 import { requestJson } from '../src/trueforge/http';
 
 const sessions = vi.hoisted(() => ({
@@ -25,7 +25,7 @@ const log = { info() {}, warn() {}, error() {}, debug() {} };
 const created = { type: 'turn.created', id: 'created', turnId: 'turn-1' };
 const completed = { type: 'turn.done', id: 'done', state: { status: 'done', output: { content: 'done' } } };
 
-function start(overrides: Partial<StartRunOptions> = {}, models = ['fake/model']) {
+function start(overrides: Partial<StartRunOptions> = {}, models = ['fake/model'], settings: Partial<TrueForgeSettings> = {}) {
   const service = createTrueForgeService({
     agentsDir: 'agents',
     mcp: () => ({ url: 'http://localhost/mcp', token: 'token' }),
@@ -36,6 +36,7 @@ function start(overrides: Partial<StartRunOptions> = {}, models = ['fake/model']
       retryMaxAttempts: 1,
       coderAgent: 'anvil-coder',
       inlineAgent: 'anvil-inline',
+      ...settings,
     }),
     log,
   });
@@ -66,7 +67,33 @@ beforeEach(() => {
 
 afterEach(() => vi.useRealTimers());
 
+it('honors the configured attempt limit on rate limits before falling back', async () => {
+  const request = vi.mocked(requestJson).getMockImplementation()!;
+  vi.mocked(requestJson).mockImplementation(async (...args) => args[2] === '/api/v1/models'
+    ? { data: [{ name: 'fake/model' }, { name: 'fake/second' }] }
+    : request(...args));
+  sessions.createTurnStream.mockImplementationOnce(async function* () {
+    yield created;
+    yield { type: 'turn.done', id: 'limited', state: { status: 'error', message: '[Model Error] Request failed (429): quota exhausted' } };
+  }).mockImplementationOnce(async function* () { yield completed; });
+  const { handle, events } = start({}, ['fake/model', 'fake/second']);
+  expect(await handle.done).toMatchObject({ status: 'done', model: 'fake/second' });
+  expect(events.filter(event => event.type === 'model.retry')).toHaveLength(0);
+  expect(events.filter(event => event.type === 'model.fallback')).toHaveLength(1);
+});
+
 describe('workspace MCP names and batch approvals', () => {
+  it('passes per-model output limits and a smaller compaction threshold to TrueForge', async () => {
+    sessions.getTurn.mockResolvedValue({ data: { state: completed.state } });
+    const { handle } = start({}, ['fake/model'], {
+      modelParams: { 'fake/model': { max_tokens: 1536, reasoning_effort: 'none' } }, compactionTokens: 3500,
+    });
+    expect(await handle.done).toMatchObject({ status: 'done' });
+    const spec = sessions.create.mock.calls[0][0].agent.spec;
+    expect(spec.model.params).toMatchObject({ maxTokens: 1536, reasoningEffort: 'none' });
+    expect(spec.config.contextManagement.compaction.trigger.value).toBe(3500);
+  });
+
   it('retargets the named agent’s editor MCP server to this workspace when creating an inline spec', async () => {
     sessions.getTurn.mockResolvedValue({ data: { state: completed.state } });
     const { handle } = start();

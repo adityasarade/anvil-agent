@@ -43,12 +43,22 @@ export type EditResult = { ok: true; text: string } | { ok: false; reason: strin
 
 export function createEditGate(host: EditorToolHost): EditGate {
   const entries = new Map<string, Entry>();
+  const invalidRuns = new Set<string>();
+  const controllers = new Map<string, AbortController>();
+
+  function proposalArgs(tool: string, args: EditArgs): Record<string, unknown> {
+    // Descriptions are presentation metadata; paths and every edit byte bind the approval.
+    const path = host.resolvePath(args.path);
+    return tool === TOOL_NAMES.editFile && 'edits' in args ? { path, edits: args.edits } : { path, content: 'content' in args ? args.content : undefined };
+  }
 
   function deny(reason: string): ApprovalDecision {
     return { status: 'deny', reason };
   }
 
   async function reviewToolCall(call: ToolCallInfo, runId: string, tfSessionId: string): Promise<ApprovalDecision> {
+    if (invalidRuns.has(runId)) return deny('Run has ended; review cancelled.');
+    if (!controllers.has(runId)) controllers.set(runId, new AbortController());
     const tool = call.name;
     if (tool !== TOOL_NAMES.editFile && tool !== TOOL_NAMES.writeFile) return deny(`${tool} is not an edit tool.`);
     const args = canonicalEditArgs(tool, call.args);
@@ -99,7 +109,7 @@ export function createEditGate(host: EditorToolHost): EditGate {
     } catch (err) {
       return deny(`The review of ${rel} failed: ${msgOf(err)}`);
     }
-    if (!outcome || outcome.status === 'cancelled') return deny('review cancelled');
+    if (invalidRuns.has(runId) || !outcome || outcome.status === 'cancelled') return deny('review cancelled');
     if (!outcome.accepted?.length) {
       const n = hunks.length || outcome.decisions?.length || 1;
       return deny(
@@ -107,39 +117,32 @@ export function createEditGate(host: EditorToolHost): EditGate {
       );
     }
 
-    const key = keyOf(tfSessionId, tool, args);
+    const key = keyOf(tfSessionId, tool, proposalArgs(tool, args));
     entries.set(key, { key, sid: tfSessionId, tool, relPath: rel, runId, change, outcome, hunks });
     return { status: 'allow' };
   }
 
-  function findEntry(tool: string, args: Record<string, unknown>, sid: string | undefined): Entry | undefined {
+  function findEntry(tool: string, args: EditArgs, sid: string | undefined): Entry | undefined {
     if (!sid) return undefined;
-    const exact = entries.get(keyOf(sid, tool, args));
-    if (exact) return exact;
-    let rel: string | undefined;
     try {
-      rel = host.resolvePath(String(args.path ?? ''));
+      return entries.get(keyOf(sid, tool, proposalArgs(tool, args)));
     } catch {
       return undefined;
     }
-    let match: Entry | undefined;
-    for (const e of entries.values()) {
-      if (e.sid !== sid || e.tool !== tool || e.relPath !== rel) continue;
-      if (match) return undefined;
-      match = e;
-    }
-    return match;
   }
 
-  async function applyReviewed(toolName: string, args: Record<string, unknown>, tfSessionId: string | undefined): Promise<string> {
+  async function applyReviewed(toolName: string, args: Record<string, unknown>, tfSessionId: string | undefined, signal?: AbortSignal): Promise<string> {
     const canonical = canonicalEditArgs(toolName, args);
     const entry = typeof canonical === 'string' ? undefined : findEntry(toolName, canonical, tfSessionId);
     if (!entry) return 'Not applied: this edit was not reviewed by the user.';
     entries.delete(entry.key);
+    const runSignal = controllers.get(entry.runId)?.signal;
+    const combined = signal && runSignal ? AbortSignal.any([signal, runSignal]) : signal ?? runSignal;
+    if (invalidRuns.has(entry.runId) || combined?.aborted) return 'Not applied: the run was cancelled.';
 
     let applied: AppliedChange | null;
     try {
-      applied = await host.review.apply(entry.change, entry.outcome);
+      applied = await host.review.apply(entry.change, entry.outcome, combined);
     } catch (err) {
       return `Not applied: ${msgOf(err)} Re-read ${entry.relPath} with read_file and propose the edit again against its current text.`;
     }
@@ -177,6 +180,9 @@ export function createEditGate(host: EditorToolHost): EditGate {
   }
 
   function forgetRun(runId: string): void {
+    invalidRuns.add(runId);
+    controllers.get(runId)?.abort();
+    controllers.delete(runId);
     for (const [k, e] of entries) if (e.runId === runId) entries.delete(k);
   }
 

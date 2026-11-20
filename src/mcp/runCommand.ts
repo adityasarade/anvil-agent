@@ -1,5 +1,5 @@
 /**
- * run_command implementation: `/bin/bash -lc <command>` in its own process group, so a
+ * run_command implementation: `/bin/bash -c <command>` in its own process group, so a
  * cancel (MCP notifications/cancelled -> AbortSignal) or a timeout kills the whole tree.
  */
 import { spawn } from 'node:child_process';
@@ -32,7 +32,7 @@ export function runShellCommand(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn('/bin/bash', ['-lc', command], {
+      child = spawn('/bin/bash', ['-c', command], {
         cwd: opts.cwd,
         env: opts.env,
         detached: true, // new process group: kill(-pid) reaches every descendant

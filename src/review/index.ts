@@ -193,8 +193,10 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
     const real = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === s.uri.toString());
     const column = real?.viewColumn ?? vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.Active;
     const doc = await vscode.workspace.openTextDocument(s.viewUri);
+    if (s.resolved) return;
     const editor = await vscode.window.showTextDocument(doc, { viewColumn: column, preview: false, preserveFocus: false });
     s.tabSeen = true;
+    if (s.resolved) { await closeEditors(s); return; }
     decorate(editor);
     revealHunk(editor, s, s.streaming ? undefined : 0);
   }
@@ -447,22 +449,59 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
 
   async function apply(change: ProposedChange, outcome: ReviewOutcome, signal?: AbortSignal): Promise<AppliedChange | null> {
     if (signal?.aborted || outcome.status !== 'decided' || outcome.accepted.length === 0) return null;
+    if (outcome.changeId !== change.id) throw new Error('The review does not belong to this proposal.');
     const hunks = computeHunks(change.originalText, change.proposedText);
     const accepted = outcome.accepted.filter((i) => i >= 0 && i < hunks.length);
     if (!accepted.length) return null;
     const uri = change.uri;
     let after: string;
+    const expected = change.isNewFile && accepted.length === hunks.length ? change.proposedText : applyHunks(change.originalText, hunks, accepted);
+    const record = (text: string): AppliedChange => {
+      const applied: AppliedChange = {
+        id: change.id, runId: change.runId, relPath: change.relPath, uri,
+        before: change.isNewFile ? null : change.originalText, after: text,
+        hunksApplied: accepted.slice().sort((a, b) => a - b), hunksTotal: hunks.length, appliedAt: Date.now(), undone: false,
+      };
+      journal.record(applied);
+      applyEmitter.fire(applied);
+      return applied;
+    };
+
+    // A failed save must not strand an edit outside the undo journal. Restore only
+    // our exact result, so a concurrent user edit is never overwritten by recovery.
+    async function saveOrRecover(doc: vscode.TextDocument): Promise<void> {
+      try {
+        if (!await doc.save()) throw new Error('save returned false');
+      } catch (error) {
+        let restored = !change.isNewFile && doc.getText() === change.originalText;
+        if (doc.getText() === expected) {
+          try {
+            const rollback = new vscode.WorkspaceEdit();
+            if (change.isNewFile) rollback.deleteFile(uri);
+            else rollback.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(expected.length)), change.originalText);
+            restored = await vscode.workspace.applyEdit(rollback);
+            if (!change.isNewFile) restored = restored && doc.getText() === change.originalText;
+          } catch { /* retain a recovery record below */ }
+        }
+        if (!restored) {
+          record(doc.getText());
+          void vscode.window.showErrorMessage(`Anvil: saving ${change.relPath} failed. The remaining change is recorded in Changes; use Undo to recover.`);
+        }
+        throw new Error(`Could not save ${change.relPath}. ${restored ? 'The Anvil edit was rolled back.' : 'A recovery change remains in Changes; use Undo.'} (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
 
     if (change.isNewFile) {
       const existing = await readCurrentText(uri);
-      if (existing !== null && existing !== '') throw new Error(`${change.relPath} already exists; refusing to overwrite it.`);
-      const content = accepted.length === hunks.length ? change.proposedText : applyHunks('', hunks, accepted);
+      if (signal?.aborted) return null;
+      if (existing !== null) throw new Error(`${change.relPath} already exists; refusing to overwrite it.`);
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+      if (signal?.aborted) return null;
       const edit = new vscode.WorkspaceEdit();
-      edit.createFile(uri, { overwrite: true, contents: Buffer.from(content, 'utf8') });
+      edit.createFile(uri, { overwrite: false, contents: Buffer.from(expected, 'utf8') });
       if (!(await vscode.workspace.applyEdit(edit))) throw new Error(`VS Code rejected creating ${change.relPath}.`);
       const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.isDirty && !(await doc.save())) throw new Error(`Could not save ${change.relPath}`);
+      if (doc.isDirty) await saveOrRecover(doc);
       after = doc.getText();
     } else {
       const doc = await vscode.workspace.openTextDocument(uri); // open buffer if loaded, else disk
@@ -475,18 +514,13 @@ export function createReviewService(ctx: vscode.ExtensionContext, opts: { worksp
       for (const e of hunkEdits(change.originalText, hunks, accepted)) {
         edit.replace(uri, new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end)), e.text);
       }
+      if (signal?.aborted) return null;
       if (!(await vscode.workspace.applyEdit(edit))) throw new Error(`VS Code rejected the edit to ${change.relPath}.`);
-      if (!(await doc.save())) throw new Error(`Could not save ${change.relPath}`);
+      await saveOrRecover(doc);
       after = doc.getText(); // may differ from the plain result if format-on-save ran
     }
 
-    const applied: AppliedChange = {
-      id: change.id, runId: change.runId, relPath: change.relPath, uri,
-      before: change.isNewFile ? null : change.originalText, after,
-      hunksApplied: accepted.slice().sort((a, b) => a - b), hunksTotal: hunks.length, appliedAt: Date.now(), undone: false,
-    };
-    journal.record(applied);
-    applyEmitter.fire(applied);
+    const applied = record(after);
     log.info(`applied ${accepted.length}/${hunks.length} hunks to ${change.relPath}`);
     void vscode.window
       .showInformationMessage(`Applied ${accepted.length} of ${hunks.length} hunks to ${change.relPath}`, 'Undo')

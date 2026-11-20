@@ -310,6 +310,10 @@ function stringify(v: unknown): string {
   if (v == null) return '';
   const t = textOf(v);
   if (t) return t;
+  if (typeof v === 'object' && v !== null && 'content' in v) {
+    const content = textOf((v as Ev).content);
+    if (content) return content;
+  }
   try {
     return JSON.stringify(v);
   } catch {

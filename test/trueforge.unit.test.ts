@@ -22,6 +22,8 @@ describe('classifyError', () => {
     ['[Model Error] Request failed (503): The model is overloaded.', 'transient'],
     ['[Model Error] Request failed (500): internal', 'transient'],
     ['[Model Error] Request failed (400): Request contains an invalid argument.', 'model'],
+    ['[Model Error] Request failed (413): Request too large on tokens per minute (TPM): Limit 8000, Requested 20222, reduce your message size and try again.', 'model'],
+    ['[Model Error] maximum context length exceeded, try again', 'model'],
     ['Iteration limit reached', 'other'],
     ['MCP error -32001: Request timed out', 'other'],
   ])('%s -> %s', (msg, expected) => {
@@ -76,6 +78,15 @@ describe('toToolCallInfo', () => {
 });
 
 describe('TurnTranslator', () => {
+  it('renders structured subagent output as readable findings rather than a message envelope', () => {
+    const events: UiEvent[] = [];
+    const tr = new TurnTranslator('run', event => events.push(event));
+    tr.handle({ type: 'thread.done', id: 'end', threadId: 'scout', state: {
+      status: 'done', output: { type: 'model.message', id: 'message', content: 'src/app.py:1-4 - application entry point' },
+    } });
+    expect(events[0]).toMatchObject({ type: 'subagent.done', ok: true, output: 'src/app.py:1-4 - application entry point' });
+  });
+
   it('merges deltas, emits only new text, tracks streaming tool calls and compaction', () => {
     const out: UiEvent[] = [];
     const tr = new TurnTranslator('run', (e) => out.push(e));
@@ -124,6 +135,7 @@ _describe('retryDelayMs', () => {
     _expect(_retryDelayMs('[Model Error] Request failed (429): quota', 1)).toBe(15_000);
     _expect(_retryDelayMs('[Model Error] Request failed (429): quota', 3)).toBe(60_000);
     _expect(_retryDelayMs('Please retry in 21.4s.', 1)).toBe(21_900);
+    _expect(_retryDelayMs('Please try again in 3.825s.', 1)).toBe(4_325);
     _expect(_retryDelayMs('[Model Error] Request failed (503): high demand', 2)).toBe(10_000);
     _expect(_retryDelayMs('[Model Error] Cannot connect to API: connect ECONNREFUSED', 2)).toBe(2_000);
     _expect(_retryDelayMs('(429) quota', 1, 10)).toBe(150);

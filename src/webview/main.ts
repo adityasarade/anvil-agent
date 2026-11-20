@@ -5,6 +5,8 @@ import { Transcript } from './transcript';
 
 const header = element('header', 'panel-header');
 const topBar = element('div', 'top-bar');
+const brand = element('div', 'brand');
+brand.append(element('span', 'brand-mark', '✳'), element('strong', '', 'Anvil'), element('span', 'brand-label', 'CODE'));
 const health = element('div', 'health muted');
 const healthDot = element('span', 'health-dot');
 healthDot.setAttribute('aria-hidden', 'true');
@@ -15,20 +17,51 @@ const actions = element('div', 'header-actions');
 const session = button('Session ↗', 'link', () => post({ type: 'openSession' }));
 session.disabled = true;
 actions.append(session, button('New', 'secondary', () => post({ type: 'newChat' })));
-topBar.append(health, actions);
+topBar.append(brand, actions);
 
 const models = button('', 'model-chain', () => post({ type: 'selectModel' }));
 models.title = 'Select model chain';
 const index = element('div', 'index-stats muted');
 index.hidden = true;
-header.append(topBar, models, index);
+const connection = element('div', 'connection-bar');
+connection.append(health, index);
+header.append(topBar, connection);
 
 const scroller = element('main', 'scroller');
 scroller.setAttribute('aria-label', 'Agent transcript');
 const transcriptContent = element('div', 'transcript');
-const empty = element('div', 'empty', 'Ask about this workspace or describe a change.');
+const empty = element('section', 'empty');
+const welcome = element('div', 'welcome');
+welcome.append(element('div', 'welcome-mark', '✳'), element('p', 'eyebrow', 'YOUR WORKSPACE, IN FOCUS'),
+  element('h1', '', 'What shall we build?'),
+  element('p', 'welcome-description', 'Explore the code. Make a change. Review every detail.'));
+const starters = element('div', 'starter-list');
+for (const [icon, title, detail, prompt] of [
+  ['⌕', 'Understand this codebase', 'Find the architecture and entry points', 'Explain the architecture of this workspace and its main entry points.'],
+  ['↗', 'Build something', 'Turn an idea into a reviewed change', 'I want to add a feature: '],
+  ['✓', 'Find a bug', 'Trace a problem and verify the fix', 'Help me investigate this problem: '],
+]) {
+  const starter = button('', 'starter', () => composer.setDraft(prompt));
+  const label = element('span', 'starter-label');
+  label.append(element('strong', '', title), element('span', 'muted', detail));
+  starter.append(element('span', 'starter-icon', icon), label, element('span', 'starter-arrow', '↗'));
+  starters.append(starter);
+}
+empty.append(welcome, starters);
 scroller.append(empty, transcriptContent);
 const composerContainer = element('div', 'composer');
+const activity = element('div', 'activity muted');
+activity.setAttribute('role', 'status');
+activity.hidden = true;
+const activityText = element('span', '', 'Working…');
+activity.append(element('span', 'activity-dot'), activityText);
+const latest = button('↓ Latest', 'latest-button', () => {
+  follow = true;
+  scroller.scrollTop = scroller.scrollHeight;
+  latest.hidden = true;
+});
+latest.hidden = true;
+composerContainer.append(latest, activity, models);
 document.body.append(header, scroller, composerContainer);
 
 let follow = true;
@@ -38,6 +71,7 @@ function scheduleScroll(): void {
   scrollFrame = requestAnimationFrame(() => {
     scrollFrame = 0;
     if (follow) scroller.scrollTop = scroller.scrollHeight;
+    latest.hidden = follow;
   });
 }
 
@@ -52,6 +86,7 @@ scroller.addEventListener('scroll', () => {
   if (nearBottom) follow = true;
   else if (userScrolling) follow = false;
   userScrolling = false;
+  latest.hidden = follow;
 }, { passive: true });
 const observer = new ResizeObserver(scheduleScroll);
 observer.observe(transcriptContent);
@@ -85,7 +120,6 @@ function showModels(activeModel = state?.activeModel): void {
     entry.classList.toggle('is-active', active);
     if (active) entry.setAttribute('aria-current', 'true');
     entry.append(element('span', 'model-name mono', name));
-    if (position === 0 && modelChain.length) entry.append(element('span', 'primary-label', 'Primary'));
     nodes.push(entry);
   });
   if (!nodes.length) nodes.push(element('span', 'muted', 'Select a model'));
@@ -118,6 +152,9 @@ function updateState(next: PanelState): void {
   showIndex(next.index);
   transcript.syncChanges(next.changes);
   composer.setRunning(next.running);
+  activity.hidden = !next.running;
+  models.disabled = next.running;
+  document.body.classList.toggle('is-running', next.running);
 }
 
 showModels();
@@ -131,12 +168,23 @@ window.addEventListener('message', ({ data }: MessageEvent<HostToPanel>) => {
       const event = data.event;
       transcript.ingest(event);
       if (event.type === 'run.started') {
+        activity.hidden = false;
+        activityText.textContent = 'Working…';
+        composer.setRunning(true);
+        models.disabled = true;
+        document.body.classList.add('is-running');
         follow = true;
         scheduleScroll();
         latestRun = { id: event.runId, sessionId: event.sessionId, model: event.model };
         showSession(event.sessionUrl);
         showModels(event.model);
       } else if (event.type === 'model.fallback' || event.type === 'run.done') {
+        if (event.type === 'run.done') {
+          activity.hidden = true;
+          composer.setRunning(false);
+          models.disabled = false;
+          document.body.classList.remove('is-running');
+        } else activityText.textContent = 'Switching to fallback…';
         if (!latestRun || latestRun.id === event.runId) {
           const model = event.type === 'model.fallback' ? event.to : event.model;
           latestRun = { id: event.runId, sessionId: latestRun?.sessionId ?? state?.sessionId, model };
@@ -145,6 +193,10 @@ window.addEventListener('message', ({ data }: MessageEvent<HostToPanel>) => {
       } else if (event.type === 'context.selected' && !state?.index) {
         showIndex(event.result.indexStats);
       }
+      if (event.type === 'approval.requested') activityText.textContent = 'Waiting for your review';
+      else if (event.type === 'approval.resolved') activityText.textContent = 'Working…';
+      else if (event.type === 'model.retry') activityText.textContent = 'Retrying model…';
+      else if (event.type === 'tool.call') activityText.textContent = `Working · ${event.name.replaceAll('_', ' ')}`;
       break;
     }
     case 'mentionResults':
@@ -156,6 +208,11 @@ window.addEventListener('message', ({ data }: MessageEvent<HostToPanel>) => {
       showModels();
       showSession();
       transcript.reset();
+      composer.setRunning(false);
+      activity.hidden = true;
+      models.disabled = false;
+      latest.hidden = true;
+      document.body.classList.remove('is-running');
       break;
   }
 });

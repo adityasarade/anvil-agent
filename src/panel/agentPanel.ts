@@ -79,6 +79,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'state', state });
   }
 
+  postError(message: string): void {
+    this.postEvent({
+      type: 'run.done', runId: `startup-${randomBytes(8).toString('hex')}`,
+      status: 'error', model: '', text: '', error: message, modelsTried: [], elapsedMs: 0,
+    });
+  }
+
   reset(): void {
     this.events.length = 0;
     this.post({ type: 'reset' });

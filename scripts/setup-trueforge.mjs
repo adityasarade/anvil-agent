@@ -3,8 +3,7 @@
 //
 //   npm run setup                     register providers whose keys are set, upsert the agents
 //   npm run setup -- --status         print health, providers, models and agents
-//   npm run setup -- --break-primary  re-register the primary provider with an invalid key (Task C demo)
-//   npm run setup -- --restore        re-register the primary provider with the real key
+//   npm run demo:failure              create a dedicated unreachable provider for Task C
 //   options: --url http://127.0.0.1:8790 (or TRUEFORGE_URL)
 //
 // Keys are read from process.env, then ../.env, then .env (never printed, never written to the repo).
@@ -17,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MCP_SERVER_NAME = 'anvil-editor';
 const PLACEHOLDER_MCP_URL = 'http://127.0.0.1:43117/mcp';
-const BROKEN_KEY = 'invalid-key-for-demo';
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -227,35 +225,6 @@ async function setup() {
   console.log(`\nSessions UI: ${BASE}/`);
 }
 
-async function primaryProvider(cfg) {
-  const available = await configuredModels();
-  const chain = chainFrom(cfg, available);
-  if (!chain.length) throw new Error('No models are configured; run `npm run setup` first.');
-  const primaryModel = chain[0];
-  const p = (cfg.providers ?? []).find((x) => providerModels(x.manifest).includes(primaryModel));
-  if (!p) throw new Error(`The primary model ${primaryModel} does not come from ${'config'}/models*.json; cannot break/restore it.`);
-  return { p, primaryModel, chain };
-}
-
-async function breakPrimary() {
-  const { cfg } = loadModelsConfig();
-  const { p, primaryModel, chain } = await primaryProvider(cfg);
-  if (!p.manifest.auth?.api_key) throw new Error(`${providerName(p.manifest)} has no API key to break.`);
-  const manifest = substitute(p.manifest);
-  manifest.auth = { ...manifest.auth, api_key: BROKEN_KEY };
-  await putProvider(manifest);
-  console.log(`Primary provider ${providerName(p.manifest)} now uses an invalid key; ${primaryModel} will fail with an invalid-key error (401/400).`);
-  console.log(`Anvil should fall back automatically to ${chain[1] ?? '(no second model configured!)'}. Undo with: npm run setup -- --restore`);
-}
-
-async function restore() {
-  const { cfg } = loadModelsConfig();
-  const { p, primaryModel } = await primaryProvider(cfg);
-  if (p.env && !envValue(p.env)) throw new Error(`${p.env} is not set; cannot restore ${providerName(p.manifest)}.`);
-  await putProvider(substitute(p.manifest));
-  console.log(`Restored ${providerName(p.manifest)} with the real key; ${primaryModel} is primary again.`);
-}
-
 async function status() {
   let health;
   try {
@@ -287,13 +256,21 @@ async function status() {
 }
 
 async function main() {
+  const unknown = argv.find(arg => arg.startsWith('-') && !['--help', '-h', '--status', '--url'].includes(arg));
+  if (unknown) throw new Error(`Unknown option ${unknown}. Use npm run demo:failure for resilience testing.`);
   if (flag('--help') || flag('-h')) {
-    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 12).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(`Register Anvil providers and agents in local TrueForge.
+
+npm run setup                     Register configured providers and agents
+npm run setup -- --status         Show health, model names, and agents
+npm run setup -- --url URL        Use a different TrueForge server
+npm run demo:failure              Create the dedicated Task C failure provider
+
+Keys are read from the environment or ignored .env files and never printed.
+Providers: config/models.json, falling back to config/models.example.json.`);
     return;
   }
   if (flag('--status')) return status();
-  if (flag('--break-primary')) return breakPrimary();
-  if (flag('--restore')) return restore();
   return setup();
 }
 

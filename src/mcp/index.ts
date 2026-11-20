@@ -125,7 +125,9 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
     async ({ query, budget_tokens }, extra) =>
       guard(TOOL_NAMES.retrieveContext, async () => {
         const sid = sessionOf(extra);
-        const budgetTokens = Math.max(500, Math.min(budget_tokens ?? 4000, MAX_BUDGET));
+        const configured = host.contextBudgetTokens?.() ?? 4000;
+        const ceiling = Number.isFinite(configured) ? Math.max(500, Math.min(Math.floor(configured), MAX_BUDGET)) : 4000;
+        const budgetTokens = Math.max(1, Math.min(budget_tokens ?? ceiling, ceiling));
         const result = host.context.retrieve(query, { budgetTokens });
         const run = host.trueforge.runForSession(sid);
         host.emit(sid, { type: 'context.selected', runId: run?.runId ?? '', result });
@@ -288,7 +290,7 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
       if (extra.signal.aborted) return fail('Not applied: the request was cancelled.');
       const canonical = canonicalEditArgs(name, args);
       if (typeof canonical === 'string') return fail(`Not applied: ${canonical}`);
-      const text = await gate.applyReviewed(name, canonical, sessionOf(extra));
+      const text = await gate.applyReviewed(name, canonical, sessionOf(extra), extra.signal);
       return text.startsWith('Not applied') ? fail(text) : ok(text);
     });
 
@@ -353,7 +355,7 @@ function registerTools(server: McpServer, host: EditorToolHost, gate: EditGate, 
         log.info(`run_command in ${rel || '.'}: ${command}`);
         const res = await runShellCommand(command, { cwd: dir, env: host.commandEnv(), timeoutSeconds, signal: extra.signal });
         const text = formatCommandResult(res);
-        return res.exitCode === 0 ? ok(text) : { ...ok(text), isError: res.aborted || res.timedOut ? true : undefined };
+        return res.exitCode === 0 ? ok(text) : fail(text);
       }),
   );
 }

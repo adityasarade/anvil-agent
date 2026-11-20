@@ -1,0 +1,11 @@
+{
+  "anvil.models": ["openrouter/particle-1-free", "openrouter/flint-free"],
+  "anvil.agents.inline": "anvil-inline-direct",
+  "anvil.context.budgetTokens": 2000,
+  "anvil.context.repoMapTokens": 600,
+  "anvil.context.compactionTokens": 12000,
+  "anvil.modelParams": {
+    "openrouter/particle-1-free": { "max_tokens": 8192 },
+    "openrouter/flint-free": { "max_tokens": 8192 }
+  }
+}

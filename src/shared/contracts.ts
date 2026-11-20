@@ -365,6 +365,8 @@ export interface EditorToolHost {
   /** Environment for run_command (PATH with workspace .venv/bin prepended, etc.). */
   commandEnv(): NodeJS.ProcessEnv;
   commandTimeoutSeconds(): number;
+  /** Default and ceiling for retrieve_context, before the transport cap. */
+  contextBudgetTokens?(): number;
 }
 
 /**
@@ -376,7 +378,7 @@ export interface EditGate {
   /** Called from onApproval for edit tools. Runs the review; stores the outcome; returns allow (>=1 hunk accepted) or deny. */
   reviewToolCall(call: ToolCallInfo, runId: string, tfSessionId: string): Promise<ApprovalDecision>;
   /** Called by the edit tool handlers. Applies the stored outcome for these args; returns the text for the model. */
-  applyReviewed(toolName: string, args: Record<string, unknown>, tfSessionId: string | undefined): Promise<string>;
+  applyReviewed(toolName: string, args: Record<string, unknown>, tfSessionId: string | undefined, signal?: AbortSignal): Promise<string>;
   /** Drops stored outcomes for a run (on cancel). */
   forgetRun(runId: string): void;
 }

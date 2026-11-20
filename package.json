@@ -41,39 +41,144 @@
       ]
     },
     "commands": [
-      { "command": "anvil.inlineEdit", "title": "Anvil: Inline Edit", "category": "Anvil" },
-      { "command": "anvil.openPanel", "title": "Anvil: Open Agent Panel", "category": "Anvil" },
-      { "command": "anvil.cancel", "title": "Anvil: Stop Generation", "category": "Anvil", "icon": "$(debug-stop)" },
-      { "command": "anvil.newChat", "title": "Anvil: New Agent Session", "category": "Anvil", "icon": "$(add)" },
-      { "command": "anvil.selectModel", "title": "Anvil: Select Model Chain", "category": "Anvil" },
-      { "command": "anvil.openSession", "title": "Anvil: Open TrueForge Session", "category": "Anvil", "icon": "$(link-external)" },
-      { "command": "anvil.undoLastChange", "title": "Anvil: Undo Last Applied Change", "category": "Anvil" },
-      { "command": "anvil.reconnect", "title": "Anvil: Reconnect to TrueForge", "category": "Anvil" },
-      { "command": "anvil.reindex", "title": "Anvil: Rebuild Context Index", "category": "Anvil" },
-      { "command": "anvil.review.acceptHunk", "title": "Anvil: Accept Hunk", "category": "Anvil" },
-      { "command": "anvil.review.rejectHunk", "title": "Anvil: Reject Hunk", "category": "Anvil" },
-      { "command": "anvil.review.acceptAll", "title": "Anvil: Accept All Hunks", "category": "Anvil", "icon": "$(check-all)" },
-      { "command": "anvil.review.rejectAll", "title": "Anvil: Reject All Hunks", "category": "Anvil", "icon": "$(close-all)" },
-      { "command": "anvil.review.openSideBySide", "title": "Anvil: Open Side-by-Side Diff", "category": "Anvil", "icon": "$(split-horizontal)" }
+      {
+        "command": "anvil.inlineEdit",
+        "title": "Anvil: Inline Edit",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.openPanel",
+        "title": "Anvil: Open Agent Panel",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.cancel",
+        "title": "Anvil: Stop Generation",
+        "category": "Anvil",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "anvil.newChat",
+        "title": "Anvil: New Agent Session",
+        "category": "Anvil",
+        "icon": "$(add)"
+      },
+      {
+        "command": "anvil.selectModel",
+        "title": "Anvil: Select Model Chain",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.openSession",
+        "title": "Anvil: Open TrueForge Session",
+        "category": "Anvil",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "anvil.undoLastChange",
+        "title": "Anvil: Undo Last Applied Change",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.reconnect",
+        "title": "Anvil: Reconnect to TrueForge",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.reindex",
+        "title": "Anvil: Rebuild Context Index",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.review.acceptHunk",
+        "title": "Anvil: Accept Hunk",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.review.rejectHunk",
+        "title": "Anvil: Reject Hunk",
+        "category": "Anvil"
+      },
+      {
+        "command": "anvil.review.acceptAll",
+        "title": "Anvil: Accept All Hunks",
+        "category": "Anvil",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "anvil.review.rejectAll",
+        "title": "Anvil: Reject All Hunks",
+        "category": "Anvil",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "anvil.review.openSideBySide",
+        "title": "Anvil: Open Side-by-Side Diff",
+        "category": "Anvil",
+        "icon": "$(split-horizontal)"
+      }
     ],
     "keybindings": [
-      { "command": "anvil.inlineEdit", "key": "ctrl+alt+i", "mac": "cmd+alt+i", "when": "editorTextFocus" },
-      { "command": "anvil.cancel", "key": "escape", "when": "anvil.running" },
-      { "command": "anvil.review.acceptHunk", "key": "ctrl+alt+y", "mac": "cmd+alt+y", "when": "anvil.reviewActive" },
-      { "command": "anvil.review.rejectHunk", "key": "ctrl+alt+n", "mac": "cmd+alt+n", "when": "anvil.reviewActive" }
+      {
+        "command": "anvil.inlineEdit",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "anvil.cancel",
+        "key": "escape",
+        "when": "anvil.running"
+      },
+      {
+        "command": "anvil.review.acceptHunk",
+        "key": "ctrl+alt+y",
+        "mac": "cmd+alt+y",
+        "when": "anvil.reviewActive"
+      },
+      {
+        "command": "anvil.review.rejectHunk",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "anvil.reviewActive"
+      }
     ],
     "menus": {
       "editor/title": [
-        { "command": "anvil.review.acceptAll", "when": "resourceScheme == anvil-review", "group": "navigation@1" },
-        { "command": "anvil.review.rejectAll", "when": "resourceScheme == anvil-review", "group": "navigation@2" },
-        { "command": "anvil.review.openSideBySide", "when": "resourceScheme == anvil-review", "group": "navigation@3" }
+        {
+          "command": "anvil.review.acceptAll",
+          "when": "resourceScheme == anvil-review",
+          "group": "navigation@1"
+        },
+        {
+          "command": "anvil.review.rejectAll",
+          "when": "resourceScheme == anvil-review",
+          "group": "navigation@2"
+        },
+        {
+          "command": "anvil.review.openSideBySide",
+          "when": "resourceScheme == anvil-review",
+          "group": "navigation@3"
+        }
       ],
       "view/title": [
-        { "command": "anvil.newChat", "when": "view == anvil.agentPanel", "group": "navigation@1" },
-        { "command": "anvil.openSession", "when": "view == anvil.agentPanel", "group": "navigation@2" }
+        {
+          "command": "anvil.newChat",
+          "when": "view == anvil.agentPanel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "anvil.openSession",
+          "when": "view == anvil.agentPanel",
+          "group": "navigation@2"
+        }
       ],
       "editor/context": [
-        { "command": "anvil.inlineEdit", "when": "editorHasSelection", "group": "1_modification@1" }
+        {
+          "command": "anvil.inlineEdit",
+          "when": "editorHasSelection",
+          "group": "1_modification@1"
+        }
       ]
     },
     "configuration": {
@@ -86,7 +191,9 @@
         },
         "anvil.models": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Ordered TrueForge model names (provider/model) as configured in TrueForge. The first is primary; the rest are automatic fallbacks. Empty = use every model TrueForge reports, in its order."
         },
@@ -128,6 +235,20 @@
           "type": "number",
           "default": 180,
           "description": "Default timeout for run_command."
+        },
+        "anvil.modelParams": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object"
+          },
+          "description": "Optional TrueForge model parameters by provider/model name, e.g. max_tokens and reasoning_effort. Forwarded to TrueForge; provider support varies."
+        },
+        "anvil.context.compactionTokens": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 2000,
+          "description": "Input-token threshold for TrueForge compaction. Lower it for endpoints with small per-request token limits."
         }
       }
     }
@@ -139,7 +260,19 @@
     "test": "vitest run",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository -o anvil-agent.vsix",
     "trueforge": "sh scripts/start-trueforge.sh",
-    "setup": "node scripts/setup-trueforge.mjs"
+    "setup": "node scripts/setup-trueforge.mjs",
+    "test:unit": "node scripts/checks.mjs unit",
+    "test:integration": "node scripts/checks.mjs integration",
+    "test:flask": "node scripts/checks.mjs flask",
+    "test:extension": "npm run build && node scripts/test-extension.mjs",
+    "verify:submission": "node scripts/checks.mjs submission",
+    "demo:prepare": "bash scripts/demo/prepare-flask.sh",
+    "demo:verify": "python3 scripts/demo/verify-flask.py",
+    "writeup:pdf": "node scripts/export-writeup.mjs",
+    "demo:failure": "node scripts/demo/failure-provider.mjs",
+    "test:live": "npm run build && node scripts/test-extension.mjs",
+    "demo:pdf": "node scripts/export-demo.mjs",
+    "test:webview": "npm run build && node scripts/test-webview.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

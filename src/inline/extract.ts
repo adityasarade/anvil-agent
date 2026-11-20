@@ -2,16 +2,19 @@
 
 /** Code from a (possibly still streaming) model reply: after the first ``` line, up to the closing fence. */
 export function extractCode(text: string): { code: string; fenced: boolean; closed: boolean } {
-  const lines = text.split('\n');
-  const i = lines.findIndex((l) => l.startsWith('```'));
+  const lines = text.split(/\r?\n/);
+  const opening = /^ {0,3}(`{3,}|~{3,})[^\r\n]*$/;
+  const i = lines.findIndex((line) => opening.test(line));
   if (i < 0) {
     if (text.trimStart().startsWith('```')) return { code: '', fenced: true, closed: false };
     return { code: text, fenced: false, closed: false };
   }
+  const marker = opening.exec(lines[i])![1];
   let body = lines.slice(i + 1);
-  const j = body.findIndex((l) => l.trim() === '```');
+  const closing = new RegExp('^' + marker[0] + '{' + marker.length + ',}$');
+  const j = body.findIndex((line) => closing.test(line.trim()));
   if (j >= 0) return { code: body.slice(0, j).join('\n'), fenced: true, closed: true };
-  if (body.length && /^`{1,2}$/.test(body[body.length - 1])) body = body.slice(0, -1); // partial closing fence
+  if (body.length && new RegExp('^' + marker[0] + '{1,' + (marker.length - 1) + '}$').test(body[body.length - 1])) body = body.slice(0, -1);
   return { code: body.join('\n'), fenced: true, closed: false };
 }
 

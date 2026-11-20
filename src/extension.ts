@@ -20,7 +20,7 @@ import { createContextEngine } from './context';
 import { createTrueForgeService } from './trueforge';
 import { createEditGate, startEditorMcpServer } from './mcp';
 import { createReviewService } from './review';
-import { registerInlineEdit } from './inline/inlineEdit';
+import { registerInlineEdit, runInline } from './inline/inlineEdit';
 import { AgentPanelProvider } from './panel/agentPanel';
 import { buildAgentPrompt, formatK } from './host/prompt';
 import { createLogger, setLogSink } from './shared/log';
@@ -38,6 +38,8 @@ import {
   type PanelHost,
   type PanelState,
   type RunHandle,
+  type ReviewService,
+  type TrueForgeService,
   type ToolCallInfo,
   type TrueForgeHealth,
   type UiEvent,
@@ -47,7 +49,15 @@ const log = createLogger('anvil');
 
 const EXCLUDED_DIRS = /(^|\/)(\.git|node_modules|\.venv|venv|__pycache__|dist|build|\.tox|\.mypy_cache|\.pytest_cache|\.ruff_cache)(\/|$)/;
 
-export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
+interface ExtensionTestApi {
+  review: ReviewService;
+  context: ContextEngine;
+  trueforge: TrueForgeService;
+  inlineEdit(instruction: string, onEvent: (event: UiEvent) => void): Promise<void>;
+  runAgent(text: string, onEvent: (event: UiEvent) => void): Promise<RunHandle>;
+}
+
+export async function activate(ctx: vscode.ExtensionContext): Promise<ExtensionTestApi | undefined> {
   const channel = vscode.window.createOutputChannel('Anvil');
   ctx.subscriptions.push(channel);
   setLogSink((line) => channel.appendLine(line));
@@ -88,12 +98,28 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   /* ── Editor host shared by the MCP tools ────────────────────────── */
   const runs = new Map<string, { handle: RunHandle; kind: 'agent' | 'inline' }>();
   let panel: AgentPanelProvider | undefined;
+  let reservation: AbortController | undefined;
+  let sessionGeneration = 0;
+  const acquireRun = () => {
+    if (reservation || runs.size) return undefined;
+    const controller = new AbortController();
+    reservation = controller;
+    setRunning();
+    return { signal: controller.signal, dispose() {
+      if (reservation === controller) reservation = undefined;
+      setRunning();
+    } };
+  };
 
   const resolvePath = (p: string): string => {
     const cleaned = p.trim().replace(/^["']|["']$/g, '');
     const abs = path.isAbsolute(cleaned) ? path.normalize(cleaned) : path.normalize(path.join(root, cleaned));
     const rel = path.relative(root, abs);
     if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`Path ${p} is outside the workspace`);
+    let ancestor = abs;
+    while (!fs.existsSync(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor);
+    const realRel = path.relative(fs.realpathSync(root), fs.realpathSync(ancestor));
+    if (realRel === '..' || realRel.startsWith('..' + path.sep) || path.isAbsolute(realRel)) throw new Error(`Path ${p} follows a symlink outside the workspace`);
     return rel.split(path.sep).join('/');
   };
 
@@ -148,6 +174,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       return env;
     },
     commandTimeoutSeconds: () => cfg().get<number>('command.timeoutSeconds', 180),
+    contextBudgetTokens: () => cfg().get<number>('context.budgetTokens', 4000),
   };
 
   /* ── MCP server + TrueForge runtime ─────────────────────────────── */
@@ -165,6 +192,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       retryMaxAttempts: cfg().get<number>('retry.maxAttempts', 3),
       coderAgent: cfg().get<string>('agents.coder', 'anvil-coder'),
       inlineAgent: cfg().get<string>('agents.inline', 'anvil-inline'),
+      modelParams: cfg().get<Record<string, Record<string, unknown>>>('modelParams', {}),
+      compactionTokens: cfg().get<number>('context.compactionTokens', 60000),
     }),
     mcp: () => ({ url: mcp.url, token }),
     mcpServerName,
@@ -202,6 +231,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         setupDone = true;
         log.info(`connected to TrueForge ${health.version ?? ''}; model chain: ${chain.join(' → ')}`);
       } catch (e) {
+        setupDone = false;
         health = { ...health, error: String((e as Error)?.message ?? e) };
         log.error('TrueForge setup failed', e);
         vscode.window.showWarningMessage(`Anvil: ${health.error}`);
@@ -217,10 +247,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push({ dispose: () => clearInterval(poll) });
 
   /* ── Runs, cancellation, context key ────────────────────────────── */
-  const setRunning = () => {
-    void vscode.commands.executeCommand('setContext', 'anvil.running', runs.size > 0);
+  function setRunning() {
+    void vscode.commands.executeCommand('setContext', 'anvil.running', runs.size > 0 || !!reservation);
     pushState();
-  };
+  }
   const trackRun = (handle: RunHandle): vscode.Disposable => {
     runs.set(handle.runId, { handle, kind: handle.kind });
     setRunning();
@@ -237,6 +267,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     return { dispose: done };
   };
   const cancelAll = async () => {
+    reservation?.abort();
     const active = [...runs.values()];
     await Promise.all(
       active.map(async ({ handle }) => {
@@ -276,7 +307,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       activeModel: chain[0],
       sessionId,
       sessionUrl: sessionId ? trueforge.sessionUrl(sessionId) : undefined,
-      running: runs.size > 0,
+      running: runs.size > 0 || !!reservation,
       changes: review.journal.list().map(summarize),
       index: indexStats,
     };
@@ -313,16 +344,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   const panelHost: PanelHost = {
     send(text: string, mentions: Mention[]) {
+      const lease = acquireRun();
+      if (!lease) {
+        void vscode.window.showInformationMessage('Anvil: a run is already in progress. Stop it first (Esc).');
+        pushState();
+        return;
+      }
+      const generation = sessionGeneration;
       void (async () => {
-        if (runs.size > 0) {
-          vscode.window.showInformationMessage('Anvil: a run is already in progress. Stop it first (Esc).');
-          return;
-        }
         if (!(await connect())) {
-          vscode.window.showErrorMessage(`Anvil: TrueForge is not reachable at ${trueforge.baseUrl}. Start it with "npm run trueforge" and try again.`);
-          return;
+          throw new Error(health.error ?? `TrueForge setup failed at ${trueforge.baseUrl}. Run npm run setup, then reconnect.`);
         }
         await indexing;
+        if (lease.signal.aborted || generation !== sessionGeneration) return;
         const firstTurn = !sessionId;
         const built = buildAgentPrompt({
           text,
@@ -351,17 +385,24 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         });
         trackRun(handle);
         const result = await handle.done;
-        if (result.sessionId) sessionId = result.sessionId;
+        if (result.sessionId && generation === sessionGeneration) sessionId = result.sessionId;
         pushState();
-      })().catch((e) => log.error('send failed', e));
+      })().catch((e) => {
+        log.error('send failed', e);
+        panel?.postError(`Could not start the run: ${(e as Error).message ?? String(e)}`);
+        void vscode.window.showErrorMessage(`Anvil: ${(e as Error).message ?? String(e)}`);
+      }).finally(() => lease.dispose());
     },
     cancel: () => void cancelAll(),
     newChat() {
-      void cancelAll();
-      sessionId = undefined;
-      sessionAllowedCommands.clear();
-      panel?.reset();
-      pushState();
+      const generation = ++sessionGeneration;
+      void cancelAll().then(() => {
+        if (generation !== sessionGeneration) return;
+        sessionId = undefined;
+        sessionAllowedCommands.clear();
+        panel?.reset();
+        pushState();
+      });
     },
     undo(changeId) {
       void review.journal.undo(changeId).then((ok) => {
@@ -416,9 +457,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(review.onDidApply(() => pushState()));
 
   /* ── Inline edit ────────────────────────────────────────────────── */
-  ctx.subscriptions.push(
-    registerInlineEdit(ctx, { trueforge, review, context, workspaceRoot: root, log: createLogger('inline'), trackRun }),
-  );
+  const inlineDeps = { trueforge, review, context, workspaceRoot: root, log: createLogger('inline'), trackRun, acquireRun };
+  ctx.subscriptions.push(registerInlineEdit(ctx, inlineDeps));
 
   /* ── Commands ───────────────────────────────────────────────────── */
   ctx.subscriptions.push(
@@ -464,6 +504,41 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   );
 
   void indexing;
+  // Available only inside an Extension Test Host; production exposes no test controls.
+  return ctx.extensionMode === vscode.ExtensionMode.Test ? {
+    review, context, trueforge,
+    async inlineEdit(instruction, onEvent) {
+      const lease = acquireRun();
+      if (!lease) throw new Error('Anvil is busy');
+      try {
+        if (!await connect()) throw new Error(health.error || 'TrueForge setup failed');
+        await indexing;
+        await runInline({ ...inlineDeps, onEvent }, lease.signal, instruction);
+      } finally { lease.dispose(); }
+    },
+    async runAgent(text, onEvent) {
+      const lease = acquireRun();
+      if (!lease) throw new Error('Anvil is busy');
+      try {
+        if (!await connect()) throw new Error(health.error || 'TrueForge setup failed');
+        await indexing;
+        const built = buildAgentPrompt({ text, mentions: [], context, firstTurn: true, repoMapTokens: cfg().get<number>('context.repoMapTokens', 1200) });
+        let handle!: RunHandle;
+        handle = trueforge.startRun({ kind: 'agent', prompt: built.content,
+          onEvent(event) { onEvent(event); panel?.postEvent(event); },
+          // Only the isolated Extension Test Host auto-approves commands. File
+          // edits still use the production gate and real editor review commands.
+          onApproval(call, runId) {
+            return EDIT_TOOLS.includes(call.name) ? gate.reviewToolCall(call, runId, handle.sessionId || '')
+              : Promise.resolve(unknownToolDenial(call.name) ?? { status: 'allow' });
+          },
+        });
+        trackRun(handle);
+        void handle.done.finally(() => lease.dispose());
+        return handle;
+      } catch (error) { lease.dispose(); throw error; }
+    },
+  } : undefined;
 }
 
 export function deactivate(): void {}

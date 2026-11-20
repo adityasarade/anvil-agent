@@ -1,5 +1,5 @@
 import type { Mention, MentionSuggestion } from '../shared/contracts';
-import { button, chip, element, post, type MentionResults } from './render';
+import { button, chip, element, post, readDraft, saveDraft, type MentionResults } from './render';
 
 interface Query {
   start: number;
@@ -28,6 +28,7 @@ export class Composer {
   private readonly pins = element('div', 'mentions');
   private readonly options = element('ul', 'suggestions');
   private readonly send = button('Send', 'primary send', () => this.submitOrStop());
+  private readonly commands = element('div', 'command-menu');
   private mentions: Mention[] = [];
   private items: MentionSuggestion[] = [];
   private activeOption = 0;
@@ -40,8 +41,9 @@ export class Composer {
 
   constructor(container: HTMLElement) {
     const box = element('div', 'compose-box');
-    this.input.rows = 2;
-    this.input.placeholder = 'Ask Anvil to work on your code…';
+    this.input.rows = 3;
+    this.input.placeholder = 'Describe a change, ask a question…';
+    this.input.value = readDraft();
     this.input.setAttribute('aria-label', 'Message Anvil');
     this.input.setAttribute('aria-autocomplete', 'list');
     this.input.setAttribute('aria-controls', 'mention-options');
@@ -54,15 +56,42 @@ export class Composer {
     this.pins.hidden = true;
 
     const footer = element('div', 'compose-footer');
-    const hint = element('p', 'muted', '@file or @symbol to pin context · Esc to stop');
+    const tools = element('div', 'compose-tools');
+    const attach = button('@', 'compose-tool', () => this.insertText('@'));
+    attach.title = 'Mention a file or symbol';
+    attach.setAttribute('aria-label', attach.title);
+    const commands = button('/', 'compose-tool', () => {
+      this.commands.hidden = !this.commands.hidden;
+      commands.setAttribute('aria-expanded', String(!this.commands.hidden));
+    });
+    commands.title = 'Local commands';
+    commands.setAttribute('aria-label', commands.title);
+    commands.setAttribute('aria-expanded', 'false');
+    commands.setAttribute('aria-controls', 'composer-commands');
+    this.commands.id = 'composer-commands';
+    this.commands.hidden = true;
+    for (const [name, description] of [['/new', 'New conversation'], ['/model', 'Choose model chain'], ['/session', 'Open TrueForge session']]) {
+      const item = button('', 'command-option', () => {
+        this.commands.hidden = true;
+        commands.setAttribute('aria-expanded', 'false');
+        this.runCommand(name);
+      });
+      item.append(element('span', 'mono', name), element('span', 'muted', description));
+      item.dataset.command = name;
+      this.commands.append(item);
+    }
+    tools.append(attach, commands, element('span', 'review-mode', 'Review edits'));
+    const hint = element('p', 'composer-hint muted', 'Enter to send · Shift+Enter for newline');
     hint.id = 'composer-hint';
-    footer.append(hint, this.send);
-    box.append(this.options, this.pins, this.input, footer);
-    container.append(box);
+    footer.append(tools, this.send);
+    box.append(this.commands, this.options, this.pins, this.input, footer);
+    container.append(box, hint);
 
     this.input.addEventListener('input', event => {
       this.syncPins();
       this.updateSend();
+      this.resize();
+      saveDraft(this.input.value);
       if (!(event as InputEvent).isComposing) this.refreshQuery();
     });
     this.input.addEventListener('click', () => this.refreshQuery());
@@ -77,15 +106,66 @@ export class Composer {
     this.input.addEventListener('blur', () => this.closeSuggestions());
     this.input.addEventListener('keydown', event => this.inputKeydown(event));
     document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !this.commands.hidden) {
+        event.preventDefault();
+        this.commands.hidden = true;
+        commands.setAttribute('aria-expanded', 'false');
+        this.input.focus();
+        return;
+      }
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !this.running) return;
       event.preventDefault();
       this.stop();
     });
     this.updateSend();
+    requestAnimationFrame(() => this.resize());
+  }
+
+  setDraft(text: string): void {
+    this.input.value = text;
+    this.mentions = [];
+    this.closeSuggestions();
+    this.syncPins();
+    saveDraft(text);
+    this.updateSend();
+    this.resize();
+    this.input.focus();
+    this.input.setSelectionRange(text.length, text.length);
+  }
+
+  private insertText(text: string): void {
+    this.input.focus();
+    const start = this.input.selectionStart;
+    const prefix = start && !/\s/.test(this.input.value[start - 1]) ? ' ' : '';
+    this.input.setRangeText(prefix + text, start, this.input.selectionEnd, 'end');
+    saveDraft(this.input.value);
+    this.syncPins();
+    this.updateSend();
+    this.resize();
+    this.refreshQuery();
+  }
+
+  private resize(): void {
+    this.input.style.height = 'auto';
+    this.input.style.height = `${Math.min(this.input.scrollHeight, Math.max(100, window.innerHeight * .28))}px`;
+  }
+
+  private runCommand(text: string): boolean {
+    // Commands are local UI actions, never sent to the model as instructions.
+    if (text === '/new') {
+      if (!this.running) post({ type: 'newChat' });
+    } else if (text === '/model') {
+      if (!this.running) post({ type: 'selectModel' });
+    } else if (text === '/session') post({ type: 'openSession' });
+    else return false;
+    return true;
   }
 
   setRunning(running: boolean): void {
     this.running = running;
+    this.commands.querySelectorAll<HTMLButtonElement>('button').forEach(item => {
+      item.disabled = running && item.dataset.command !== '/session';
+    });
     if (!running) this.stopping = false;
     this.updateSend();
   }
@@ -118,9 +198,15 @@ export class Composer {
     }
     const text = this.input.value.trim();
     if (!text) return;
+    if (this.runCommand(text)) {
+      this.setDraft('');
+      return;
+    }
     this.syncPins();
     const mentions = this.mentions;
     this.input.value = '';
+    saveDraft('');
+    this.resize();
     this.mentions = [];
     this.syncPins();
     this.closeSuggestions();
@@ -137,7 +223,7 @@ export class Composer {
   }
 
   private updateSend(): void {
-    this.send.textContent = this.running ? (this.stopping ? 'Stopping…' : 'Stop') : 'Send';
+    this.send.textContent = this.running ? (this.stopping ? 'Stopping…' : 'Stop') : 'Send ↑';
     this.send.classList.toggle('stop', this.running);
     this.send.disabled = this.running ? this.stopping : !this.input.value.trim();
   }
@@ -209,6 +295,8 @@ export class Composer {
     this.syncPins();
     this.updateSend();
     this.input.focus();
+    saveDraft(this.input.value);
+    this.resize();
   }
 
   private inputKeydown(event: KeyboardEvent): void {

@@ -1,0 +1,10 @@
+{
+  "anvil.models": ["groq/qwen3-8-27b"],
+  "anvil.agents.inline": "anvil-inline-direct",
+  "anvil.context.budgetTokens": 1000,
+  "anvil.context.repoMapTokens": 400,
+  "anvil.context.compactionTokens": 3500,
+  "anvil.modelParams": {
+    "groq/qwen3-8-27b": { "max_tokens": 1536, "reasoning_effort": "none" }
+  }
+}

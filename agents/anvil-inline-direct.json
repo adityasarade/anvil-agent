@@ -1,0 +1,19 @@
+{
+  "name": "anvil-inline-direct",
+  "description": "Selection-only inline editing without tool definitions, for hosted models with small request budgets.",
+  "manifest": {
+    "model": { "name": "${PRIMARY_MODEL}", "params": { "temperature": 0, "max_tokens": 1536 } },
+    "instructions": "Rewrite the selected code according to the instruction. The user message includes the selection and surrounding code. Return the COMPLETE replacement for the selected region only, inside one closed fenced code block tagged with its language. Preserve indentation and unrelated behavior. Update docstrings inside the selection when behavior changes. Do not explain, call tools, or include code outside the selected region.",
+    "mcp_servers": [],
+    "config": {
+      "dynamic_sub_agents": { "enabled": false },
+      "generative_ui": { "enabled": false },
+      "ask_user_questions": { "enabled": false },
+      "sandbox": { "enabled": false },
+      "web_search": { "enabled": false },
+      "memory": { "enabled": false },
+      "iteration_limit": 2
+    },
+    "response_format": { "type": "text" }
+  }
+}

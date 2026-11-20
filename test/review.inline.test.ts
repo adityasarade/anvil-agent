@@ -67,8 +67,9 @@ function deferred<T>() {
 }
 
 function textDocument(text: string, save = async () => true) {
+  let content = text;
   return {
-    uri, save, getText: () => text, lineCount: 1, eol: 1, languageId: 'python',
+    uri, save, getText: () => content, setText: (value: string) => { content = value; }, lineCount: 1, eol: 1, languageId: 'python',
     lineAt: () => ({ text, range: { end: new vscode.Position(0, text.length) } }),
     offsetAt: (p: vscode.Position) => p.character,
     positionAt: (n: number) => new vscode.Position(0, n),
@@ -77,6 +78,7 @@ function textDocument(text: string, save = async () => true) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.applyEdit.mockReset().mockResolvedValue(true);
   Object.assign(vscode.workspace, { textDocuments: [] });
 });
 
@@ -89,6 +91,11 @@ describe('extractCode', () => {
     expect(r).toEqual({ code: 'a\nb', fenced: true, closed: true });
   });
   it('hides partial closing fence', () => expect(extractCode('```\na\n``').code).toBe('a'));
+  it('matches the actual fence length and accepts CRLF and tilde fences', () => {
+    expect(extractCode('````md\n```py\nx\n```\n````')).toEqual({ code: '```py\nx\n```', fenced: true, closed: true });
+    expect(extractCode('~~~py\r\nx = 1\r\n~~~').closed).toBe(true);
+    expect(extractCode('````py\nx\n```').closed).toBe(false);
+  });
 });
 
 describe('reindent', () => {
@@ -188,6 +195,38 @@ describe('save failures', () => {
     expect(review.journal.list()).toEqual([]);
   });
 
+  it('rolls back its own buffer edit after a save fails', async () => {
+    const doc = textDocument(change.originalText, async () => false);
+    mocks.openDocument.mockResolvedValue(doc);
+    mocks.applyEdit.mockImplementationOnce(async () => { doc.setText(change.proposedText); return true; })
+      .mockImplementationOnce(async () => { doc.setText(change.originalText); return true; });
+    const review = createReviewService(ctx(), { workspaceRoot: '/work', log });
+    await expect(review.apply(change, accepted)).rejects.toThrow('rolled back');
+    expect(doc.getText()).toBe(change.originalText);
+    expect(review.journal.list()).toHaveLength(0);
+  });
+
+  it('records a recovery change if rollback is rejected', async () => {
+    const doc = textDocument(change.originalText, async () => false);
+    mocks.openDocument.mockResolvedValue(doc);
+    mocks.applyEdit.mockImplementationOnce(async () => { doc.setText(change.proposedText); return true; })
+      .mockResolvedValueOnce(false);
+    const review = createReviewService(ctx(), { workspaceRoot: '/work', log });
+    await expect(review.apply(change, accepted)).rejects.toThrow('recovery change remains');
+    expect(review.journal.list()[0]).toMatchObject({ before: change.originalText, after: change.proposedText, undone: false });
+  });
+
+  it('keeps concurrent user edits and records them for explicit recovery', async () => {
+    const doc = textDocument(change.originalText, async () => { doc.setText('user edit'); return false; });
+    mocks.openDocument.mockResolvedValue(doc);
+    mocks.applyEdit.mockImplementationOnce(async () => { doc.setText(change.proposedText); return true; });
+    const review = createReviewService(ctx(), { workspaceRoot: '/work', log });
+    await expect(review.apply(change, accepted)).rejects.toThrow('recovery change remains');
+    expect(doc.getText()).toBe('user edit');
+    expect(mocks.applyEdit).toHaveBeenCalledOnce();
+    expect(review.journal.list()[0].after).toBe('user edit');
+  });
+
   it('leaves the journal entry active when undo cannot save', async () => {
     const doc = textDocument(change.proposedText, async () => false);
     Object.assign(vscode.workspace, { textDocuments: [doc] });
@@ -201,6 +240,26 @@ describe('save failures', () => {
     expect(journal.list()[0].undone).toBe(false);
     expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('Could not save app.py'));
   });
+});
+
+it('refuses to overwrite an existing empty file with a new-file proposal', async () => {
+  Object.assign(vscode.workspace, { textDocuments: [textDocument('')] });
+  const review = createReviewService(ctx(), { workspaceRoot: '/work', log });
+  await expect(review.apply({ ...change, originalText: '', isNewFile: true }, accepted)).rejects.toThrow('already exists');
+  expect(mocks.applyEdit).not.toHaveBeenCalled();
+});
+
+it('does not create a file if cancelled while its directory is opening', async () => {
+  const directory = deferred<void>();
+  Object.assign(vscode.workspace, { fs: { readFile: async () => { throw new Error('missing'); }, createDirectory: () => directory.promise } });
+  const review = createReviewService(ctx(), { workspaceRoot: '/work', log });
+  const controller = new AbortController();
+  const applying = review.apply({ ...change, originalText: '', isNewFile: true }, accepted, controller.signal);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  controller.abort();
+  directory.resolve();
+  expect(await applying).toBeNull();
+  expect(mocks.applyEdit).not.toHaveBeenCalled();
 });
 
 it('does not commit an accepted inline edit if cancelled while opening the document', async () => {

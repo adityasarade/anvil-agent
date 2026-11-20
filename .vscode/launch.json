@@ -1,0 +1,11 @@
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "name": "Anvil: Extension Development Host",
+    "type": "extensionHost",
+    "request": "launch",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/.demo/flask"],
+    "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+    "preLaunchTask": "Anvil: build"
+  }]
+}

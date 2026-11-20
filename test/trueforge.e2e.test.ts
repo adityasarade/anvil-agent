@@ -71,11 +71,14 @@ function models(...names: string[]) {
 beforeAll(async () => {
   // Short paused-turn keepalive so the offload/re-subscribe path is exercised (the launcher script uses 3600).
   tf = await startTrueForge(await closedPort(), { TURN_PAUSED_KEEPALIVE_SECONDS: '2' });
-  if (!tf) return;
+  if (!tf) {
+    if (process.env.ANVIL_REQUIRE_INTEGRATION === '1') throw new Error('Required TrueForge integration runtime failed to start.');
+    return;
+  }
   settings.trueforgeUrl = tf.url;
   fake = await startFakeModel({ editPath: 'app.py', slowChunkMs: 100 });
   await api('PUT', '/api/v1/settings/model-providers', {
-    manifest: { type: 'custom', name: 'fake', base_url: fake.url, models: models('script', 'scout', 'cmd', 'echo', 'unauthorized', 'slow', 'effect-fail') },
+    manifest: { type: 'custom', name: 'fake', base_url: fake.url, models: models('script', 'scout', 'multi', 'cmd', 'fail-cmd', 'echo', 'unauthorized', 'slow', 'effect-fail') },
   });
   await api('PUT', '/api/v1/settings/model-providers', {
     manifest: { type: 'custom', name: 'down', base_url: `http://127.0.0.1:${await closedPort()}/v1`, models: models('down') },
@@ -157,6 +160,27 @@ async function turnsOf(sid: string) {
 }
 
 describe('TrueForge runtime + editor MCP server (live TrueForge)', () => {
+  it('reports nonzero command exits as failed tool results through real TrueForge', async () => {
+    settings.models = ['fake/fail-cmd'];
+    const { handle, events } = start('Verify the change.');
+    expect((await handle.done).status).toBe('done');
+    const result = ofType(events, 'tool.result').find(event => event.name === 'run_command');
+    expect(result).toMatchObject({ ok: false, summary: expect.stringContaining('exit code 7') });
+  }, 30_000);
+
+  it('executes a scripted three-file review loop and an approved verification command', async () => {
+    // Protocol coverage only: scripted filenames are not evidence of real-model discovery.
+    settings.models = ['fake/multi'];
+    const { handle, events } = start('Update the greeting and include its tests and documentation.');
+    const result = await handle.done;
+    expect(result.status).toBe('done');
+    expect(host.applied.map(change => change.relPath)).toEqual(['app.py', 'tests/test_app.py', 'docs/usage.md']);
+    expect(host.reviews).toHaveLength(3);
+    expect(ofType(events, 'approval.requested').map(event => event.kind)).toEqual(['edit', 'edit', 'edit', 'command']);
+    expect(ofType(events, 'tool.result').some(event => event.name === 'run_command' && event.summary.includes('verified'))).toBe(true);
+    expect(host.emitted.filter(item => item.event.type === 'change.applied')).toHaveLength(3);
+  }, 60_000);
+
   it('health, model chain, MCP registration and tool listing', async () => {
     const h = await service.health();
     expect(h.ok).toBe(true);

@@ -136,18 +136,52 @@ describe('EditGate', () => {
     expect(await host.read('new.py')).toBeNull();
   });
 
-  it('falls back only when one reviewed entry remains for the same session, tool and path', async () => {
+  it('normalizes equivalent paths but never applies different proposal contents', async () => {
     const args = { path: 'app.py', edits: EDITS };
     const other = { path: 'app.py', edits: [{ old_text: 'return a + b', new_text: 'return b + a' }] };
     expect((await gate.reviewToolCall(call('edit_file', args), 'run-1', 'sess-1')).status).toBe('allow');
     expect((await gate.reviewToolCall(call('edit_file', other), 'run-2', 'sess-1')).status).toBe('allow');
-    expect(await gate.applyReviewed('edit_file', { ...args, path: './app.py' }, 'sess-1')).toMatch(/^Not applied/);
+    expect(await gate.applyReviewed('edit_file', { ...args, edits: [{ old_text: 'return a + b', new_text: 'return 999' }] }, 'sess-1')).toMatch(/^Not applied/);
     expect(await gate.applyReviewed('edit_file', args, undefined)).toMatch(/^Not applied/);
     expect(await host.read('app.py')).toBe(APP_PY);
     gate.forgetRun('run-2');
     expect(await gate.applyReviewed('edit_file', args, 'other-session')).toMatch(/^Not applied/);
     const msg = await gate.applyReviewed('edit_file', { path: './app.py', edits: EDITS, extra: true }, 'sess-1');
     expect(msg).toBe('Applied all 2 hunks to app.py. File now has 21 lines.');
+  });
+
+  it('invalidates a review that resolves after the run ends', async () => {
+    let decide!: () => void;
+    const pending = new Promise<void>(resolve => { decide = resolve; });
+    host.setPolicy(async (change, n) => { await pending; return acceptAll(change, n); });
+    const args = { path: 'app.py', edits: EDITS };
+    const reviewed = gate.reviewToolCall(call('edit_file', args), 'late-run', 's');
+    await vi.waitFor(() => expect(host.reviews).toHaveLength(1));
+    gate.forgetRun('late-run');
+    decide();
+    expect((await reviewed).status).toBe('deny');
+    expect(await gate.applyReviewed('edit_file', args, 's')).toMatch(/^Not applied/);
+    expect(await host.read('app.py')).toBe(APP_PY);
+  });
+
+  it('passes cancellation into application and blocks an already-aborted MCP call', async () => {
+    const args = { path: 'app.py', edits: EDITS };
+    await gate.reviewToolCall(call('edit_file', args), 'cancelled-apply', 's');
+    const controller = new AbortController();
+    controller.abort();
+    expect(await gate.applyReviewed('edit_file', args, 's', controller.signal)).toMatch(/cancelled/);
+    expect(host.applied).toHaveLength(0);
+
+    await gate.reviewToolCall(call('edit_file', args), 'in-flight', 's');
+    let applySignal: AbortSignal | undefined;
+    let release!: () => void;
+    const opened = new Promise<void>(resolve => { release = resolve; });
+    host.review.apply = async (_change, _outcome, signal) => { applySignal = signal; await opened; return null; };
+    const applying = gate.applyReviewed('edit_file', args, 's');
+    gate.forgetRun('in-flight');
+    expect(applySignal?.aborted).toBe(true);
+    release();
+    await applying;
   });
 
   it('rejecting all hunks, cancelling the review, or forgetting the run never writes', async () => {
@@ -239,10 +273,15 @@ describe('editor MCP server', () => {
 
   it('retrieve_context clamps the budget and emits context.selected into the run of x-tfg-session-id', async () => {
     const r = await client.callTool({ name: 'retrieve_context', arguments: { query: 'greeting', budget_tokens: 99_999 } });
-    expect(textOf(r)).toBe('RETRIEVED(greeting; budget 5500): app.py');
+    expect(textOf(r)).toBe('RETRIEVED(greeting; budget 4000): app.py');
     const ev = host.emitted.find((e) => e.event.type === 'context.selected');
     expect(ev?.sid).toBe('sess-1');
-    expect(ev?.event).toMatchObject({ type: 'context.selected', runId: 'run-1', result: { query: 'greeting', budgetTokens: 5500 } });
+    expect(ev?.event).toMatchObject({ type: 'context.selected', runId: 'run-1', result: { query: 'greeting', budgetTokens: 4000 } });
+    host.contextBudgetTokens = () => 1800;
+    expect(textOf(await client.callTool({ name: 'retrieve_context', arguments: { query: 'custom' } }))).toContain('budget 1800');
+    expect(textOf(await client.callTool({ name: 'retrieve_context', arguments: { query: 'custom', budget_tokens: 5000 } }))).toContain('budget 1800');
+    expect(textOf(await client.callTool({ name: 'retrieve_context', arguments: { query: 'custom', budget_tokens: 800 } }))).toContain('budget 800');
+    host.contextBudgetTokens = () => 4000;
   });
 
   it('read_file / search_code / find_symbol / list_files / get_diagnostics / repo_map', async () => {
@@ -289,6 +328,7 @@ describe('editor MCP server', () => {
 
   it('run_command runs bash in the workspace and reports exit code + output tail', async () => {
     const r = await client.callTool({ name: 'run_command', arguments: { command: 'echo hi from $ANVIL_TEST; pwd; exit 3' } });
+    expect(r.isError).toBe(true);
     const t = textOf(r);
     expect(t).toMatch(/^exit code 3 \(\d+\.\ds\)/);
     expect(t).toContain('hi from 1');

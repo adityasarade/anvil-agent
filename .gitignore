@@ -1,12 +1,35 @@
+# Dependencies and generated extension builds
 node_modules/
 dist/
 out/
 *.vsix
+*.tsbuildinfo
+
+# Local credentials and provider configuration
 .env
 .env.*
 !.env.example
 config/models.json
-.DS_Store
-*.log
+*.pem
+*.key
+
+# Local fixtures, recordings, exports, and test/browser profiles
+.demo/
+.artifacts/
 .vscode-test/
 coverage/
+playwright-report/
+test-results/
+TrueFoundry_Forge-a-thon_compressed_UvvRJ9C.pdf
+
+# Editor, OS, and language caches
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.swo
+*~
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

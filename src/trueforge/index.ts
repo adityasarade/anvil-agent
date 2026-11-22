@@ -728,6 +728,9 @@ export function createTrueForgeService(deps: TrueForgeServiceDeps): TrueForgeSer
           };
         }
         lastError = error;
+        // Count consecutive failures without progress: on a per-minute quota a long run can hit
+        // many 429s, but one that follows real progress is a fresh start, not a step toward giving up.
+        if (res.progressed || res.hadSideEffects) attempt = 1;
         const attemptsHere = maxAttempts;
         if (cls === 'transient' && attempt < attemptsHere) {
           const delayMs = retryDelayMs(error, attempt, backoffBase);
